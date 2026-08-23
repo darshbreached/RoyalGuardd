@@ -103,14 +103,18 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
 
     def _cfg_role_list(key):
         raw = guild_config.get(key, "")
-        names = [n.strip() for n in raw.split(",") if n.strip()]
+        entries = [v.strip() for v in raw.split(",") if v.strip()]
         roles = []
-        for name in names:
-            role = discord.utils.get(guild.roles, name=name)
+        for entry in entries:
+            role = None
+            if entry.isdigit():
+                role = guild.get_role(int(entry))
+            if role is None:
+                role = discord.utils.get(guild.roles, name=entry)
             if role:
                 roles.append(role)
             else:
-                print(f"Royal Guard: could not resolve role name '{name}' from '{key}' in guild {guild.id} ({guild.name}) - check for typos/case mismatch in /setup.")
+                print(f"Royal Guard: could not resolve role '{entry}' (tried as both ID and name) from '{key}' in guild {guild.id} ({guild.name}) - check /setup for a typo or a role that no longer exists.")
         return roles
 
     sticky_adjustments = []

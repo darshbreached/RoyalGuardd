@@ -11,14 +11,21 @@ from any matched rankbind. If no rankbind for their current rank has a
 prefix set, the nickname is left as just their Roblox username with no
 prefix.
 
-IMPORTANT: every groupbind's live rank is fetched BEFORE any role is
+IMPORTANT #1: every groupbind's live rank is fetched BEFORE any role is
 added/removed. If a Roblox API call fails for any group (rate limit, Roblox
 outage, etc.), sync_member_roles raises roblox.RobloxAPIError and makes ZERO
-role changes for this call. Previously, a failed API call silently looked
-identical to "the user left every group," causing mass false de-ranks -
-every rank-tied role stripped at once with nothing added back. Callers must
-catch roblox.RobloxAPIError and tell the user to retry rather than treat a
-failed sync the same as "nothing needed to change."
+role changes for this call - a failed API call must never look identical to
+"the user left every group."
+
+IMPORTANT #2: rankbind roles are evaluated per ROLE, not per rankbind ENTRY.
+If the same Discord role (e.g. "Roblox Verified") is bound to multiple
+different ranks as separate rankbind documents, evaluating entry-by-entry
+meant every non-matching rank's entry would independently try to strip that
+role - even if a different entry for the user's actual current rank also
+grants it - with the final add/remove outcome depending on unpredictable
+MongoDB document order (add-then-immediately-remove in the same sync call).
+Grouping by role_id first and using the union of every rank it's bound to
+fixes this: a shared role is only removed if NONE of its bound ranks match.
 """
 
 import asyncio
@@ -66,12 +73,22 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
         rank_id = rank_by_group[group_id]
         rankbinds = await db.list_rankbinds(guild.id, group_id)
 
+        # Group rankbind entries by role_id so a role bound to multiple ranks
+        # is evaluated ONCE using the union of every rank it's bound to -
+        # not once per (rank, role) pair, which previously let mismatched
+        # entries for a SHARED role strip it right after a matching entry
+        # had just granted it, depending on iteration order.
+        role_to_ranks: dict[int, set[int]] = {}
         for rb in rankbinds:
-            role = guild.get_role(int(rb["role_id"]))
+            role_id = int(rb["role_id"])
+            role_to_ranks.setdefault(role_id, set()).add(int(rb["rank_id"]))
+
+        for role_id, bound_ranks in role_to_ranks.items():
+            role = guild.get_role(role_id)
             if role is None:
                 continue
 
-            should_have = int(rb["rank_id"]) == rank_id
+            should_have = rank_id in bound_ranks
             if should_have:
                 has_any_rank = True
             has_role = role in member.roles
@@ -86,14 +103,18 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
             except discord.Forbidden:
                 continue
 
-            if should_have and rb.get("nickname_prefix") and int(rb["rank_id"]) > best_rank_id:
+        # Nickname prefix: use whichever rankbind entry matches the user's
+        # current rank and has a prefix set, preferring the highest rank_id
+        # if more than one entry for that rank has a prefix.
+        for rb in rankbinds:
+            if int(rb["rank_id"]) == rank_id and rb.get("nickname_prefix") and int(rb["rank_id"]) > best_rank_id:
                 best_rank_id = int(rb["rank_id"])
                 best_prefix = rb["nickname_prefix"]
 
     # Sticky roles from /setup. Extra Roles and Verified Roles are comma-separated
-    # role NAME lists, resolved fresh each sync. Ranks Role and Non-BA are single
-    # role IDs. Non-Verified is always removed here since this function only runs
-    # for already-verified members.
+    # lists (role ID or role name, either works), resolved fresh each sync. Ranks
+    # Role and Non-BA are single role IDs. Non-Verified is always removed here
+    # since this function only runs for already-verified members.
     guild_config = await db.get_guild_config(guild.id)
     is_verified = await db.get_verification(member.id) is not None
 
