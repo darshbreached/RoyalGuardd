@@ -130,7 +130,6 @@ class VerificationView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(embeds.powered_by_button())
 
     @discord.ui.button(label="Verify via ROBLOX Login", style=discord.ButtonStyle.success,
                         custom_id="royalguard:verify_login", row=0)
