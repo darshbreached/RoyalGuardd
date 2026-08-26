@@ -52,6 +52,7 @@ COGS = [
     "cogs.nuke",
     "cogs.activitycheck",
     "cogs.acceptrequest",
+    "cogs.warnings.py",
 ]
 
 
