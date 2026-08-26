@@ -4,9 +4,10 @@ cogs/rankbinds.py
 Manage rank -> Discord role bindings per Roblox group, plus an optional
 nickname prefix (e.g. "[OF-8]") applied automatically during role sync.
 
-/rankbind add        - bind up to 5 roles to a rank in one call. group_id
-                       and rank_id both autocomplete by name once a group
-                       is chosen.
+/rankbind add        - bind a rank to any number of roles (up to 25 per
+                       selection - Discord's own RoleSelect limit - via an
+                       interactive picker after group_id/rank_id are set).
+                       Run it again to add more if you ever need more than 25.
 /rankbind remove     - unbind a role (or all roles) from a rank
 /rankbind removebulk - remove every rankbind for a group at once, or every
                        rankbind tied to a specific Discord role across all
@@ -85,6 +86,48 @@ class RankbindListView(discord.ui.View):
         await interaction.response.edit_message(embed=self._embed(), view=self)
 
 
+class RankbindRoleSelect(discord.ui.RoleSelect):
+    """Lets staff pick any number of roles (up to Discord's 25-per-select cap)
+    to bind to one rank in a single interaction - replaces the old fixed
+    role/role2/.../role5 parameter approach."""
+
+    def __init__(self, group_id: int, rank_id: int, rank_name: str, nickname_prefix: str):
+        super().__init__(
+            placeholder="Select role(s) to bind to this rank (up to 25 at once)...",
+            min_values=1,
+            max_values=25,
+        )
+        self.group_id = group_id
+        self.rank_id = rank_id
+        self.rank_name = rank_name
+        self.nickname_prefix = nickname_prefix
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        for role in self.values:
+            await db.add_rankbind(
+                interaction.guild.id, self.group_id, self.rank_id, role.id, self.rank_name, self.nickname_prefix
+            )
+
+        role_mentions = ", ".join(r.mention for r in self.values)
+        extra = f" Nickname prefix: `{self.nickname_prefix}`." if self.nickname_prefix else ""
+        await interaction.followup.send(
+            embed=embeds.success_embed(
+                "Rankbind Added",
+                f"Rank **{self.rank_name}** (`{self.rank_id}`) in group `{self.group_id}` now maps to {role_mentions}.{extra}\n\n"
+                f"Run `/rankbind add` again on the same rank if you need to bind more than 25 roles at once."
+            ),
+            ephemeral=True,
+        )
+
+
+class RankbindRoleSelectView(discord.ui.View):
+    def __init__(self, group_id: int, rank_id: int, rank_name: str, nickname_prefix: str):
+        super().__init__(timeout=180)
+        self.add_item(RankbindRoleSelect(group_id, rank_id, rank_name, nickname_prefix))
+
+
 class RankBindGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="rankbind", description="Manage rank-to-role bindings.")
@@ -96,7 +139,7 @@ class RankBinds(commands.Cog):
         self.group = RankBindGroup()
 
         self.group.add_command(
-            app_commands.Command(name="add", description="Bind a Roblox rank to one or more Discord roles.",
+            app_commands.Command(name="add", description="Bind a Roblox rank to any number of Discord roles.",
                                   callback=self.rankbind_add)
         )
         self.group.add_command(
@@ -150,11 +193,6 @@ class RankBinds(commands.Cog):
     @app_commands.describe(
         group_id="The Roblox group (start typing to search your bound groups)",
         rank_id="The rank to bind (pick a group first, then search by name)",
-        role="The Discord role to assign for this rank",
-        role2="Optional: a second role to bind to the same rank",
-        role3="Optional: a third role to bind to the same rank",
-        role4="Optional: a fourth role to bind to the same rank",
-        role5="Optional: a fifth role to bind to the same rank",
         nickname_prefix="Optional nickname prefix, e.g. '[OF-8]' (leave blank for none)",
     )
     @app_commands.autocomplete(group_id=group_autocomplete, rank_id=rank_autocomplete)
@@ -163,31 +201,20 @@ class RankBinds(commands.Cog):
         interaction: discord.Interaction,
         group_id: int,
         rank_id: int,
-        role: discord.Role,
-        role2: discord.Role = None,
-        role3: discord.Role = None,
-        role4: discord.Role = None,
-        role5: discord.Role = None,
         nickname_prefix: str = "",
     ):
         await interaction.response.defer(ephemeral=True)
 
-        roles_to_bind = [r for r in [role, role2, role3, role4, role5] if r is not None]
-
         role_info = await roblox.get_group_roles(group_id)
         rank_name = next((r["name"] for r in role_info if r["rank"] == rank_id), f"Rank {rank_id}")
 
-        for r in roles_to_bind:
-            await db.add_rankbind(interaction.guild.id, group_id, rank_id, r.id, rank_name, nickname_prefix)
-
-        role_mentions = ", ".join(r.mention for r in roles_to_bind)
-        extra = f" Nickname prefix: `{nickname_prefix}`." if nickname_prefix else ""
-        await interaction.followup.send(
-            embed=embeds.success_embed(
-                "Rankbind Added",
-                f"Rank **{rank_name}** (`{rank_id}`) in group `{group_id}` now maps to {role_mentions}.{extra}"
-            )
+        embed = embeds.info_embed(
+            "Select Roles",
+            f"Choose the Discord role(s) to bind to **{rank_name}** (`{rank_id}`) in group `{group_id}`.\n"
+            f"You can select as many as you need in one go (up to 25)."
         )
+        view = RankbindRoleSelectView(group_id, rank_id, rank_name, nickname_prefix)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @require_level(10)
     @app_commands.describe(
