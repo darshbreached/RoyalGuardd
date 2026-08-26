@@ -4,22 +4,8 @@ cogs/moderation.py
 Ban, kick, mute (Discord timeout), and unban commands. Every action posts
 a confirmation embed and, if a log channel has been configured for "mod"
 via /setlogchannel, mirrors that same embed there.
-
-/ban and /mute also DM the target a notice BEFORE the action executes -
-DMing after a ban fails silently since Discord blocks DMs once you no
-longer share a server with someone. The DM includes the real server name
-(not a hardcoded one), an optional evidence link, and a link to the ban
-appeal form (WEBSITE_BASE_URL + /appeal). If the user has DMs disabled,
-the notice is skipped silently and the ban/mute still proceeds - a failed
-DM is never a reason to abort the action.
-
-NOTE: the appeal DM only covers THIS server. It does not claim a ban
-applies to "all associated servers" - that would require a real
-cross-server ban-sync system, which doesn't exist here. Ask if you want
-that built as a separate feature.
 """
 
-import os
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -29,8 +15,6 @@ from database.mongodb import db
 from utils import embeds
 from utils.permissions import require_level
 
-WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
-
 
 async def _log_action(guild: discord.Guild, log_type: str, embed: discord.Embed):
     channel_id = await db.get_log_channel(guild.id, log_type)
@@ -38,38 +22,6 @@ async def _log_action(guild: discord.Guild, log_type: str, embed: discord.Embed)
         channel = guild.get_channel(int(channel_id))
         if channel:
             await channel.send(embed=embed)
-
-
-async def _send_action_dm(
-    user: discord.Member,
-    title: str,
-    guild_name: str,
-    reason: str,
-    evidence: str = None,
-    duration_text: str = None,
-    include_appeal: bool = True,
-):
-    """Sends a DM notice before a moderation action executes. Never raises -
-    if the user has DMs off or has blocked the bot, this fails silently and
-    the calling command proceeds with the action regardless."""
-    embed = embeds.error_embed(title, None) if "Ban" in title else embeds.warning_embed(title, None)
-    embed.add_field(name="Origin", value=guild_name, inline=False)
-    if duration_text:
-        embed.add_field(name="Duration", value=duration_text, inline=False)
-
-    reason_value = reason
-    if evidence:
-        reason_value += f"\n[Evidence]({evidence})"
-    embed.add_field(name="Reason", value=reason_value, inline=False)
-
-    if include_appeal:
-        appeal_url = f"{WEBSITE_BASE_URL}/appeal"
-        embed.add_field(name="Appeal", value=f"[Submit an appeal]({appeal_url})", inline=False)
-
-    try:
-        await user.send(embed=embed)
-    except (discord.Forbidden, discord.HTTPException):
-        pass
 
 
 class Moderation(commands.Cog):
@@ -92,16 +44,10 @@ class Moderation(commands.Cog):
         )
 
     @app_commands.command(name="ban", description="Ban a member from the server.")
-    @app_commands.describe(user="The user to ban", reason="Reason for the ban", evidence="Optional link to evidence (screenshot, clip, etc.)")
+    @app_commands.describe(user="The user to ban", reason="Reason for the ban")
     @require_level(50)
-    async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided", evidence: str = None):
+    async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
         await interaction.response.defer(ephemeral=True)
-
-        # DM before the ban - Discord blocks DMs once the user no longer shares a server with the bot.
-        await _send_action_dm(
-            user, "Ban Notice", interaction.guild.name, reason, evidence=evidence, include_appeal=True
-        )
-
         try:
             await user.ban(reason=f"{reason} | By {interaction.user}")
         except discord.Forbidden:
@@ -130,16 +76,10 @@ class Moderation(commands.Cog):
         await _log_action(interaction.guild, "mod", embed)
 
     @app_commands.command(name="mute", description="Timeout a member for a duration.")
-    @app_commands.describe(user="The user to mute", minutes="Duration in minutes", reason="Reason for the mute", evidence="Optional link to evidence (screenshot, clip, etc.)")
+    @app_commands.describe(user="The user to mute", minutes="Duration in minutes", reason="Reason for the mute")
     @require_level(20)
-    async def mute(self, interaction: discord.Interaction, user: discord.Member, minutes: int, reason: str = "No reason provided", evidence: str = None):
+    async def mute(self, interaction: discord.Interaction, user: discord.Member, minutes: int, reason: str = "No reason provided"):
         await interaction.response.defer(ephemeral=True)
-
-        await _send_action_dm(
-            user, "Mute Notice", interaction.guild.name, reason, evidence=evidence,
-            duration_text=f"{minutes} minutes", include_appeal=True
-        )
-
         try:
             await user.timeout(timedelta(minutes=minutes), reason=f"{reason} | By {interaction.user}")
         except discord.Forbidden:

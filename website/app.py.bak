@@ -22,9 +22,6 @@ app.register_blueprint(oauth_bp)
 from website.routes.tenant import tenant_bp
 app.register_blueprint(tenant_bp)
 
-from website.routes.appeal import appeal_bp
-app.register_blueprint(appeal_bp)
-
 
 @app.route("/")
 def index():
