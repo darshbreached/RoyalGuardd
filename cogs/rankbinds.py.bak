@@ -26,11 +26,17 @@ from database.mongodb import db
 from utils import embeds, roblox
 from utils.permissions import require_level
 
-MAX_LINES_PER_PAGE = 15
+MAX_CHARS_PER_PAGE = 3800  # headroom under Discord's 4096 embed description hard cap
+MAX_ROLES_SHOWN_PER_RANK = 20  # /rankbind add now allows unlimited roles per rank; cap display for readability - use /rankbind findrole to check a specific role
 
 
 def _format_rankbind_lines(binds: list) -> list:
-    """Groups rankbind documents by rank and returns one formatted line per rank."""
+    """Groups rankbind documents by rank and returns one formatted line per rank.
+    Caps the number of role mentions shown per rank - a rank can now have any
+    number of bound roles (/rankbind add supports unlimited), and showing all
+    of them inline for a heavily-bound rank previously produced lines long
+    enough to blow past Discord's 4096-char embed description limit on their
+    own. Use /rankbind findrole to check whether a specific role is bound."""
     by_rank = {}
     for b in binds:
         by_rank.setdefault(b["rank_id"], {"rank_name": b.get("rank_name", "Rank"), "roles": []})
@@ -42,8 +48,53 @@ def _format_rankbind_lines(binds: list) -> list:
         for b in data["roles"]:
             prefix = f" (`{b['nickname_prefix']}`)" if b.get("nickname_prefix") else ""
             role_mentions.append(f"<@&{b['role_id']}>{prefix}")
-        lines.append(f"**{data['rank_name']}** (`{rank_id}`) → {', '.join(role_mentions)}")
+
+        shown = role_mentions[:MAX_ROLES_SHOWN_PER_RANK]
+        remainder = len(role_mentions) - len(shown)
+        role_text = ", ".join(shown)
+        if remainder > 0:
+            role_text += f", and **{remainder} more** (use `/rankbind findrole` to check a specific one)"
+
+        lines.append(f"**{data['rank_name']}** (`{rank_id}`) → {role_text}")
     return lines
+
+
+def _paginate_lines(lines: list) -> list:
+    """Splits formatted lines into pages under MAX_CHARS_PER_PAGE, by character
+    count rather than a fixed line count - a fixed line-count page could still
+    blow past Discord's embed description limit if individual lines are very
+    long. If a single line alone exceeds the cap, it's hard-split across
+    multiple pages rather than left to crash the send."""
+    pages = []
+    current_lines = []
+    current_len = 0
+
+    for line in lines:
+        if len(line) > MAX_CHARS_PER_PAGE:
+            if current_lines:
+                pages.append("
+".join(current_lines))
+                current_lines = []
+                current_len = 0
+            for i in range(0, len(line), MAX_CHARS_PER_PAGE):
+                pages.append(line[i:i + MAX_CHARS_PER_PAGE])
+            continue
+
+        added_len = len(line) + 1
+        if current_len + added_len > MAX_CHARS_PER_PAGE:
+            pages.append("
+".join(current_lines))
+            current_lines = [line]
+            current_len = added_len
+        else:
+            current_lines.append(line)
+            current_len += added_len
+
+    if current_lines:
+        pages.append("
+".join(current_lines))
+
+    return pages
 
 
 class RankbindListView(discord.ui.View):

@@ -12,12 +12,22 @@ nickname prefix (e.g. "[OF-8]") applied automatically during role sync.
 /rankbind removebulk - remove every rankbind for a group at once, or every
                        rankbind tied to a specific Discord role across all
                        ranks/groups
-/rankbind list        - list current bindings for a group, paginated so
-                       large lists never exceed Discord's embed limits
+/rankbind list        - list current bindings for a group, paginated by
+                       character count (not a fixed line count) so a rank
+                       with many bound roles never blows past Discord's
+                       4096-char embed description limit
 /rankbind findrole    - look up which rank(s) a given Discord role is
                        bound to, by role ID/mention instead of by rank name
+/rankbind import      - bulk-create rankbinds from an uploaded text/CSV file,
+                       one bind per line: group_id,rank_id,role_id,nickname_prefix
+                       (nickname_prefix optional). Meant for migrating from
+                       another bot (e.g. RoWifi) whose binds you've copied by
+                       hand from its dashboard/commands - RoWifi's public API
+                       does not expose an export/list endpoint for rankbinds,
+                       so this is the practical path, not automatic scraping.
 """
 
+import io
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -26,17 +36,17 @@ from database.mongodb import db
 from utils import embeds, roblox
 from utils.permissions import require_level
 
-MAX_CHARS_PER_PAGE = 3800  # headroom under Discord's 4096 embed description hard cap
-MAX_ROLES_SHOWN_PER_RANK = 20  # /rankbind add now allows unlimited roles per rank; cap display for readability - use /rankbind findrole to check a specific role
+MAX_CHARS_PER_PAGE = 3800
+MAX_ROLES_SHOWN_PER_RANK = 20
 
 
 def _format_rankbind_lines(binds: list) -> list:
     """Groups rankbind documents by rank and returns one formatted line per rank.
-    Caps the number of role mentions shown per rank - a rank can now have any
-    number of bound roles (/rankbind add supports unlimited), and showing all
-    of them inline for a heavily-bound rank previously produced lines long
-    enough to blow past Discord's 4096-char embed description limit on their
-    own. Use /rankbind findrole to check whether a specific role is bound."""
+    Caps the number of role mentions shown per rank - a rank can have any
+    number of bound roles now (/rankbind add supports unlimited), and showing
+    all of them inline for a heavily-bound rank could produce a single line
+    long enough to blow past Discord's 4096-char embed description limit on
+    its own. Use /rankbind findrole to check whether a specific role is bound."""
     by_rank = {}
     for b in binds:
         by_rank.setdefault(b["rank_id"], {"rank_name": b.get("rank_name", "Rank"), "roles": []})
@@ -53,18 +63,17 @@ def _format_rankbind_lines(binds: list) -> list:
         remainder = len(role_mentions) - len(shown)
         role_text = ", ".join(shown)
         if remainder > 0:
-            role_text += f", and **{remainder} more** (use `/rankbind findrole` to check a specific one)"
+            role_text += f", and {remainder} more (use /rankbind findrole to check a specific one)"
 
-        lines.append(f"**{data['rank_name']}** (`{rank_id}`) → {role_text}")
+        lines.append(f"**{data['rank_name']}** (`{rank_id}`) -> {role_text}")
     return lines
 
 
 def _paginate_lines(lines: list) -> list:
     """Splits formatted lines into pages under MAX_CHARS_PER_PAGE, by character
-    count rather than a fixed line count - a fixed line-count page could still
-    blow past Discord's embed description limit if individual lines are very
-    long. If a single line alone exceeds the cap, it's hard-split across
-    multiple pages rather than left to crash the send."""
+    count rather than a fixed line count - a fixed-count page could still blow
+    past Discord's embed description limit if individual lines are long. If a
+    single line alone exceeds the cap, it's hard-split across multiple pages."""
     pages = []
     current_lines = []
     current_len = 0
@@ -72,8 +81,7 @@ def _paginate_lines(lines: list) -> list:
     for line in lines:
         if len(line) > MAX_CHARS_PER_PAGE:
             if current_lines:
-                pages.append("
-".join(current_lines))
+                pages.append(chr(10).join(current_lines))
                 current_lines = []
                 current_len = 0
             for i in range(0, len(line), MAX_CHARS_PER_PAGE):
@@ -82,8 +90,7 @@ def _paginate_lines(lines: list) -> list:
 
         added_len = len(line) + 1
         if current_len + added_len > MAX_CHARS_PER_PAGE:
-            pages.append("
-".join(current_lines))
+            pages.append(chr(10).join(current_lines))
             current_lines = [line]
             current_len = added_len
         else:
@@ -91,14 +98,13 @@ def _paginate_lines(lines: list) -> list:
             current_len += added_len
 
     if current_lines:
-        pages.append("
-".join(current_lines))
+        pages.append(chr(10).join(current_lines))
 
     return pages
 
 
 class RankbindListView(discord.ui.View):
-    def __init__(self, title: str, pages: list[str], executor_id: int):
+    def __init__(self, title: str, pages: list, executor_id: int):
         super().__init__(timeout=120)
         self.title = title
         self.pages = pages
@@ -124,13 +130,13 @@ class RankbindListView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current -= 1
         self._update_buttons()
         await interaction.response.edit_message(embed=self._embed(), view=self)
 
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current += 1
         self._update_buttons()
@@ -208,6 +214,13 @@ class RankBinds(commands.Cog):
         self.group.add_command(
             app_commands.Command(name="findrole", description="Find which rank(s) a Discord role is bound to.",
                                   callback=self.rankbind_findrole)
+        )
+        self.group.add_command(
+            app_commands.Command(
+                name="import",
+                description="Bulk-import rankbinds from a file (e.g. migrating from RoWifi).",
+                callback=self.rankbind_import,
+            )
         )
         bot.tree.add_command(self.group)
 
@@ -325,10 +338,7 @@ class RankBinds(commands.Cog):
             )
 
         lines = _format_rankbind_lines(binds)
-
-        pages = []
-        for i in range(0, len(lines), MAX_LINES_PER_PAGE):
-            pages.append("\n".join(lines[i:i + MAX_LINES_PER_PAGE]))
+        pages = _paginate_lines(lines)
 
         if len(pages) == 1:
             return await interaction.followup.send(embed=embeds.info_embed(f"Rankbinds for {group_id}", pages[0]))
@@ -356,8 +366,79 @@ class RankBinds(commands.Cog):
             lines.append(f"**{b.get('rank_name', 'Rank')}** (`{b['rank_id']}`) in group `{b['group_id']}`{prefix}")
 
         await interaction.followup.send(
-            embed=embeds.info_embed(f"Rankbinds using {role.name}", "\n".join(lines))
+            embed=embeds.info_embed(f"Rankbinds using {role.name}", chr(10).join(lines))
         )
+
+    @require_level(10)
+    @app_commands.describe(
+        file="A .txt or .csv file, one bind per line: group_id,rank_id,role_id,nickname_prefix (prefix optional). Lines starting with # are skipped as comments."
+    )
+    async def rankbind_import(self, interaction: discord.Interaction, file: discord.Attachment):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            raw_bytes = await file.read()
+            text = raw_bytes.decode("utf-8")
+        except Exception as e:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Could Not Read File", f"Failed to read/decode the uploaded file: {e}")
+            )
+
+        lines = text.splitlines()
+        imported = 0
+        errors = []
+        rank_name_cache = {}
+
+        for line_num, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                errors.append(f"Line {line_num}: expected at least group_id,rank_id,role_id - got: {line}")
+                continue
+
+            group_id_str, rank_id_str, role_id_str = parts[0], parts[1], parts[2]
+            nickname_prefix = parts[3] if len(parts) > 3 else ""
+
+            try:
+                group_id = int(group_id_str)
+                rank_id = int(rank_id_str)
+                role_id = int(role_id_str)
+            except ValueError:
+                errors.append(f"Line {line_num}: group_id, rank_id, and role_id must all be numbers - got: {line}")
+                continue
+
+            role = interaction.guild.get_role(role_id)
+            if role is None:
+                errors.append(f"Line {line_num}: no role with ID {role_id} exists in this server - got: {line}")
+                continue
+
+            if group_id not in rank_name_cache:
+                try:
+                    group_roles = await roblox.get_group_roles(group_id)
+                except Exception:
+                    group_roles = []
+                rank_name_cache[group_id] = {r["rank"]: r["name"] for r in group_roles}
+
+            rank_name = rank_name_cache[group_id].get(rank_id, f"Rank {rank_id}")
+
+            await db.add_rankbind(interaction.guild.id, group_id, rank_id, role_id, rank_name, nickname_prefix)
+            imported += 1
+
+        summary = f"Imported **{imported}** rankbind(s)."
+        if errors:
+            summary += f" **{len(errors)}** line(s) skipped due to errors - see the attached report."
+
+        embed = embeds.success_embed("Rankbind Import Complete", summary) if imported else embeds.error_embed("Rankbind Import Failed", summary)
+
+        if errors:
+            report_text = chr(10).join(errors)
+            report_file = discord.File(io.BytesIO(report_text.encode("utf-8")), filename="rankbind_import_errors.txt")
+            await interaction.followup.send(embed=embed, file=report_file)
+        else:
+            await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
