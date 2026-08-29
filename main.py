@@ -54,6 +54,7 @@ COGS = [
     "cogs.acceptrequest",
     "cogs.warnings",
     "cogs.ssu",
+    "cogs.devtools"
 ]
 
 
