@@ -158,6 +158,7 @@ class ReportPanelView(discord.ui.View):
     """Persistent view - the single red button shown on the REPORT TICKETS panel."""
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(embeds.powered_by_button())
 
     @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.danger,
                         custom_id="royalguard:report_panel_button")
@@ -175,6 +176,7 @@ class OtherPanelView(discord.ui.View):
     """Persistent view - the single red button shown on the OTHER TICKETS panel."""
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(embeds.powered_by_button())
 
     @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.danger,
                         custom_id="royalguard:other_panel_button")
