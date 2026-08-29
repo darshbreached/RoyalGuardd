@@ -14,23 +14,14 @@ are bot-wide operations that shouldn't be grantable by a server admin.
 /dev dbstatus  - ping MongoDB and report latency
 /dev guilds    - list every server the bot is currently in
 /dev shutdown  - gracefully stop the bot (with a confirm button)
-!leave         - prefix command that makes the bot leave a server
-!eval          - prefix command that executes arbitrary async Python.
-                 Owner-only, but genuinely dangerous - if the bot token or
-                 your Discord account is ever compromised, this becomes a
-                 full remote-code-execution backdoor into wherever the bot
-                 is hosted (reads env vars/secrets, touches the filesystem,
-                 etc). Keep this bot's token and your own account secured
-                 accordingly (2FA, no sharing the token, no pasting it
-                 anywhere public).
+
+Deliberately does NOT include an eval/exec command - arbitrary code
+execution is a serious liability even gated to the owner (e.g. if the
+token or account were ever compromised via another route). Add only if
+you explicitly want that risk.
 """
 
-import contextlib
-import io
-import textwrap
 import time
-import traceback
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -76,7 +67,6 @@ class DevGroup(app_commands.Group):
 class DevTools(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._last_eval_result = None
         self.group = DevGroup()
 
         self.group.add_command(
@@ -188,92 +178,6 @@ class DevTools(commands.Cog):
             "This will disconnect the bot completely. It will only come back online if Railway restarts the service automatically. Are you sure?"
         )
         await interaction.response.send_message(embed=embed, view=ShutdownConfirmView(interaction.user.id), ephemeral=True)
-
-    @commands.command(name="leave")
-    @commands.is_owner()
-    async def leave(self, ctx: commands.Context, guild_id: int = None):
-        """!leave [guild_id] - makes the bot leave a server. Leaves the
-        current server if no ID is given, otherwise leaves the server with
-        that ID (handy for leaving one remotely without joining a channel
-        there first)."""
-        guild = self.bot.get_guild(guild_id) if guild_id else ctx.guild
-        if guild is None:
-            return await ctx.send(f"I'm not in a server with ID `{guild_id}`.")
-
-        farewell_channel = guild.system_channel
-        if farewell_channel is None or not farewell_channel.permissions_for(guild.me).send_messages:
-            farewell_channel = next(
-                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None
-            )
-
-        if farewell_channel:
-            try:
-                embed = discord.Embed(
-                    title="Standing Down",
-                    description=(
-                        f"Royal Guard has been ordered to withdraw from **{guild.name}**. "
-                        f"It's been an honor serving with you all. Farewell, soldiers."
-                    ),
-                    color=discord.Color.dark_red(),
-                )
-                await farewell_channel.send(embed=embed)
-            except discord.Forbidden:
-                pass
-
-        name, gid = guild.name, guild.id
-        await guild.leave()
-        await ctx.send(f"Left **{name}** (`{gid}`).")
-
-    @commands.command(name="eval")
-    @commands.is_owner()
-    async def eval_cmd(self, ctx: commands.Context, *, body: str):
-        """!eval <code> - owner-only. Executes arbitrary async Python.
-        `body` is wrapped in an async function so top-level `await` works,
-        e.g. `!eval await ctx.guild.leave()`. Has access to ctx, bot,
-        discord, commands, guild, channel, author, and `_` (the last
-        eval's return value)."""
-        env = {
-            "bot": self.bot,
-            "ctx": ctx,
-            "discord": discord,
-            "commands": commands,
-            "guild": ctx.guild,
-            "channel": ctx.channel,
-            "author": ctx.author,
-            "_": self._last_eval_result,
-        }
-        env.update(globals())
-
-        body = body.strip()
-        if body.startswith("```") and body.endswith("```"):
-            body = "\n".join(body.split("\n")[1:-1])
-        body = body.strip("`\n ")
-
-        stdout = io.StringIO()
-        to_compile = "async def __eval_func__():\n" + textwrap.indent(body, "    ")
-
-        try:
-            exec(to_compile, env)
-        except Exception as e:
-            return await ctx.send(f"```py\n{e.__class__.__name__}: {e}\n```")
-
-        func = env["__eval_func__"]
-        try:
-            with contextlib.redirect_stdout(stdout):
-                ret = await func()
-        except Exception:
-            value = stdout.getvalue()
-            await ctx.send(f"```py\n{value}{traceback.format_exc()}\n```"[:2000])
-        else:
-            value = stdout.getvalue()
-            if ret is None:
-                if value:
-                    await ctx.send(f"```py\n{value}\n```"[:2000])
-                else:
-                    await ctx.message.add_reaction("\u2705")
-            else:
-                self._last_eval_result = ret
-                await ctx.send(f"```py\n{value}{ret}\n```"[:2000])
 
 
 async def setup(bot: commands.Bot):
