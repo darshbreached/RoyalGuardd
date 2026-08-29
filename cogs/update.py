@@ -17,15 +17,18 @@ outage, etc.), sync_member_roles raises roblox.RobloxAPIError and makes ZERO
 role changes for this call - a failed API call must never look identical to
 "the user left every group."
 
-IMPORTANT #2: rankbind roles are evaluated per ROLE, not per rankbind ENTRY.
-If the same Discord role (e.g. "Roblox Verified") is bound to multiple
-different ranks as separate rankbind documents, evaluating entry-by-entry
-meant every non-matching rank's entry would independently try to strip that
-role - even if a different entry for the user's actual current rank also
-grants it - with the final add/remove outcome depending on unpredictable
-MongoDB document order (add-then-immediately-remove in the same sync call).
-Grouping by role_id first and using the union of every rank it's bound to
-fixes this: a shared role is only removed if NONE of its bound ranks match.
+IMPORTANT #2: rankbind roles are evaluated per ROLE, GLOBALLY across every
+bound group - not per rankbind entry, and not per group in isolation. If the
+same Discord role (e.g. "Roblox Verified") is bound to ranks in MULTIPLE
+different Roblox groups (or multiple ranks within one group), evaluating it
+group-by-group meant one group's rankbind could correctly grant the role
+while a completely different group's mismatched rankbind for that same role
+stripped it right back off in the same sync - since each group only knew
+about its own ranks, not the others. Building one global map of
+role_id -> {(group_id, rank_id), ...} across ALL groupbinds first, then
+checking whether the user's current rank in ANY of those groups matches ANY
+bound pair, fixes this: a shared role is only removed if it's not earned via
+any group it's bound in.
 """
 
 import asyncio
@@ -68,44 +71,44 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
             raise
         rank_by_group[group_id] = rank_id
 
+    # Build ONE global map of role_id -> {(group_id, rank_id), ...} across
+    # every bound group's rankbinds, so a role shared across multiple groups
+    # is evaluated as a single unit - not once per group in isolation.
+    role_to_qualifying_pairs: dict[int, set[tuple[int, int]]] = {}
+    rankbinds_by_group: dict[int, list] = {}
     for gb in groupbinds:
         group_id = int(gb["group_id"])
-        rank_id = rank_by_group[group_id]
         rankbinds = await db.list_rankbinds(guild.id, group_id)
-
-        # Group rankbind entries by role_id so a role bound to multiple ranks
-        # is evaluated ONCE using the union of every rank it's bound to -
-        # not once per (rank, role) pair, which previously let mismatched
-        # entries for a SHARED role strip it right after a matching entry
-        # had just granted it, depending on iteration order.
-        role_to_ranks: dict[int, set[int]] = {}
+        rankbinds_by_group[group_id] = rankbinds
         for rb in rankbinds:
             role_id = int(rb["role_id"])
-            role_to_ranks.setdefault(role_id, set()).add(int(rb["rank_id"]))
+            role_to_qualifying_pairs.setdefault(role_id, set()).add((group_id, int(rb["rank_id"])))
 
-        for role_id, bound_ranks in role_to_ranks.items():
-            role = guild.get_role(role_id)
-            if role is None:
-                continue
+    for role_id, qualifying_pairs in role_to_qualifying_pairs.items():
+        role = guild.get_role(role_id)
+        if role is None:
+            continue
 
-            should_have = rank_id in bound_ranks
-            if should_have:
-                has_any_rank = True
-            has_role = role in member.roles
+        should_have = any(rank_by_group.get(gid) == rid for gid, rid in qualifying_pairs)
+        if should_have:
+            has_any_rank = True
+        has_role = role in member.roles
 
-            try:
-                if should_have and not has_role:
-                    await member.add_roles(role, reason="Royal Guard rank sync")
-                    added.append(role.mention)
-                elif not should_have and has_role:
-                    await member.remove_roles(role, reason="Royal Guard rank sync")
-                    removed.append(role.mention)
-            except discord.Forbidden:
-                continue
+        try:
+            if should_have and not has_role:
+                await member.add_roles(role, reason="Royal Guard rank sync")
+                added.append(role.mention)
+            elif not should_have and has_role:
+                await member.remove_roles(role, reason="Royal Guard rank sync")
+                removed.append(role.mention)
+        except discord.Forbidden:
+            continue
 
-        # Nickname prefix: use whichever rankbind entry matches the user's
-        # current rank and has a prefix set, preferring the highest rank_id
-        # if more than one entry for that rank has a prefix.
+    # Nickname prefix: use whichever rankbind entry matches the user's
+    # current rank (in that entry's own group) and has a prefix set,
+    # preferring the highest rank_id if more than one entry qualifies.
+    for group_id, rankbinds in rankbinds_by_group.items():
+        rank_id = rank_by_group[group_id]
         for rb in rankbinds:
             if int(rb["rank_id"]) == rank_id and rb.get("nickname_prefix") and int(rb["rank_id"]) > best_rank_id:
                 best_rank_id = int(rb["rank_id"])

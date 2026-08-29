@@ -53,6 +53,7 @@ COGS = [
     "cogs.activitycheck",
     "cogs.acceptrequest",
     "cogs.warnings",
+    "cogs.ssu",
 ]
 
 
