@@ -53,6 +53,11 @@ class Database:
 
         await _safe_create_index(self.verifications, "discord_id", unique=True)
         await _safe_create_index(self.verifications, "roblox_id")
+        # NOTE: kept as (guild_id, discord_id) even though admin_levels now stores
+        # both users and roles under "discord_id" - Discord snowflakes are unique
+        # across users/roles/etc in practice, so a user ID and role ID colliding
+        # is not a realistic concern. If you ever want to be fully strict, this
+        # would need to become a compound (guild_id, discord_id, type) index instead.
         await _safe_create_index(self.admin_levels, [("guild_id", 1), ("discord_id", 1)], unique=True)
         await _safe_create_index(self.groupbinds, "guild_id")
         await _safe_create_index(self.rankbinds, "guild_id")
@@ -94,20 +99,73 @@ class Database:
     async def remove_verification(self, discord_id: int):
         await self.verifications.delete_one({"discord_id": str(discord_id)})
 
-    # ADMIN LEVELS (per-guild)
+    # ADMIN LEVELS (per-guild) - supports individual users AND Discord roles.
+    # Docs look like: {guild_id, discord_id, level, type: "user"|"role", role_name?}
+    # Legacy docs written before this change have no "type" field - they are
+    # always treated as type="user" by the queries below ({"type": {"$ne": "role"}}).
     async def get_admin_level(self, guild_id: int, discord_id: int) -> int:
-        doc = await self.admin_levels.find_one({"guild_id": str(guild_id), "discord_id": str(discord_id)})
+        """User's own explicit level only (ignores any roles they hold)."""
+        doc = await self.admin_levels.find_one({
+            "guild_id": str(guild_id),
+            "discord_id": str(discord_id),
+            "type": {"$ne": "role"},
+        })
         return doc["level"] if doc else 0
 
     async def set_admin_level(self, guild_id: int, discord_id: int, level: int):
         await self.admin_levels.update_one(
-            {"guild_id": str(guild_id), "discord_id": str(discord_id)},
-            {"$set": {"guild_id": str(guild_id), "discord_id": str(discord_id), "level": level}},
+            {"guild_id": str(guild_id), "discord_id": str(discord_id), "type": {"$ne": "role"}},
+            {"$set": {
+                "guild_id": str(guild_id), "discord_id": str(discord_id),
+                "level": level, "type": "user",
+            }},
             upsert=True,
         )
 
     async def remove_admin_level(self, guild_id: int, discord_id: int):
-        await self.admin_levels.delete_one({"guild_id": str(guild_id), "discord_id": str(discord_id)})
+        await self.admin_levels.delete_one({
+            "guild_id": str(guild_id), "discord_id": str(discord_id), "type": {"$ne": "role"},
+        })
+
+    async def get_role_admin_level(self, guild_id: int, role_id: int) -> int:
+        doc = await self.admin_levels.find_one({
+            "guild_id": str(guild_id), "discord_id": str(role_id), "type": "role",
+        })
+        return doc["level"] if doc else 0
+
+    async def set_role_admin_level(self, guild_id: int, role_id: int, level: int, role_name: str = ""):
+        await self.admin_levels.update_one(
+            {"guild_id": str(guild_id), "discord_id": str(role_id), "type": "role"},
+            {"$set": {
+                "guild_id": str(guild_id), "discord_id": str(role_id),
+                "level": level, "type": "role", "role_name": role_name,
+            }},
+            upsert=True,
+        )
+
+    async def remove_role_admin_level(self, guild_id: int, role_id: int):
+        await self.admin_levels.delete_one({
+            "guild_id": str(guild_id), "discord_id": str(role_id), "type": "role",
+        })
+
+    async def get_effective_admin_level(self, guild_id: int, discord_id: int, role_ids: list = None) -> int:
+        """Highest of: this user's own explicit level, and the level of any role
+        in role_ids that has been granted an admin level."""
+        levels = [await self.get_admin_level(guild_id, discord_id)]
+        if role_ids:
+            cursor = self.admin_levels.find({
+                "guild_id": str(guild_id),
+                "discord_id": {"$in": [str(r) for r in role_ids]},
+                "type": "role",
+            })
+            async for doc in cursor:
+                levels.append(doc["level"])
+        return max(levels)
+
+    async def get_all_admin_levels(self, guild_id: int):
+        """All user- and role-level admin_levels docs for this guild (for /admins view)."""
+        cursor = self.admin_levels.find({"guild_id": str(guild_id)})
+        return [doc async for doc in cursor]
 
     async def guild_has_any_admin(self, guild_id: int) -> bool:
         doc = await self.admin_levels.find_one({"guild_id": str(guild_id)})

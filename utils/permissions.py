@@ -9,8 +9,9 @@ Level 1-100    = staff hierarchy (higher = more powerful)
 Level 999999   = Owner (infinite / bypasses everything)
 
 Only the Discord user ID in BOT_OWNER_ID gets automatic Owner level,
-in every server. Everyone else is checked strictly against MongoDB,
-scoped to the current guild.
+in every server. Everyone else is checked against MongoDB, scoped to
+the current guild - and now that includes any admin level granted to
+a Discord role the member holds, not just levels set directly on them.
 """
 
 import os
@@ -29,7 +30,12 @@ async def has_level(user_id: int, guild: discord.Guild, required: int) -> bool:
     if guild is None:
         return False
 
-    level = await db.get_admin_level(guild.id, user_id)
+    # Pull the member's roles (if cached/fetchable) so role-granted admin
+    # levels are considered alongside any level set directly on the user.
+    member = guild.get_member(user_id)
+    role_ids = [r.id for r in member.roles] if member else []
+
+    level = await db.get_effective_admin_level(guild.id, user_id, role_ids)
     return level >= required
 
 
