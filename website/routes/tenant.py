@@ -2,10 +2,14 @@
 website/routes/tenant.py
 --------------------------
 Self-serve tenant bot registration via the website. Requires Discord OAuth2
-login to identify the submitter — otherwise anyone could claim ownership of
-any Discord user ID. Submissions land in the same `pending_tenants` queue the
-Discord-native /register panel uses, reviewed by the bot owner via
-/tenant approve — nothing goes live automatically from either path.
+login to identify the submitter - otherwise anyone could claim ownership of
+any Discord user ID.
+
+Auto-approve: a submission is written directly into the `tenants` collection
+as status="active" - the same collection/shape tenant_manager.py already
+reads from. There is no review queue; nothing lands in pending_tenants
+anymore. If tenant_manager.py is running, a submitted bot goes live as soon
+as it picks up the new document.
 """
 
 import os
@@ -13,8 +17,8 @@ import time
 import secrets
 import requests
 from flask import Blueprint, request, redirect, render_template, session, url_for
-from pymongo import MongoClient
 
+from pymongo import MongoClient
 from utils.token_crypto import encrypt_token
 
 tenant_bp = Blueprint("tenant", __name__)
@@ -141,11 +145,14 @@ def tenant_submit():
 
     encrypted = encrypt_token(bot_token)
 
-    _db["pending_tenants"].insert_one({
+    # Auto-approve: straight into `tenants` as active, not the pending queue.
+    _db["tenants"].insert_one({
         "owner_discord_id": int(discord_id),
         "encrypted_token": encrypted,
         "bot_name": bot_name,
-        "submitted_at": time.time(),
+        "status": "active",
+        "last_error": None,
+        "created_at": time.time(),
         "source": "website",
     })
 

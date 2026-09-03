@@ -1,49 +1,47 @@
 {% extends "base.html" %}
-{% block title %}Register Your Bot — British Army{% endblock %}
+{% block title %}Commission Your Bot — Darsh Industries{% endblock %}
 {% block content %}
 <style>
-  .stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;font-family:'Oswald','Arial Narrow',sans-serif;}
-  .masthead{font-size:12px;letter-spacing:4px;text-transform:uppercase;color:#b9b39c;margin-bottom:18px;}
-  .crest-wrap{width:110px;height:110px;margin-bottom:20px;}
-  .crest-wrap img{width:100%;height:100%;display:block;}
-  h1{font-family:'Cinzel','Georgia',serif;font-weight:700;font-size:28px;color:#e9cf7f;letter-spacing:1px;margin-bottom:10px;text-align:center;}
-  .sub{font-size:14px;color:#b9b39c;max-width:440px;text-align:center;margin-bottom:28px;line-height:1.6;}
-  .card{background:#191b13;border:1px solid #2a2d20;border-radius:6px;padding:32px;width:100%;max-width:440px;}
-  .login-btn{display:block;text-align:center;background:#7d1717;color:#e9cf7f;font-family:'Cinzel',serif;font-weight:700;font-size:14px;letter-spacing:2px;text-decoration:none;padding:14px;border-radius:3px;border:1px solid rgba(201,164,65,0.5);}
-  .login-btn:hover{background:#932020;}
-  .welcome{font-size:13px;color:#b9b39c;margin-bottom:18px;text-align:center;}
-  .welcome strong{color:#e9cf7f;}
-  label{display:block;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#e4e0d2;margin-bottom:6px;margin-top:16px;}
+  .stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;font-family:'IBM Plex Sans',sans-serif;}
+  .masthead{font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#7C8A6E;margin-bottom:16px;}
+  .seal{width:64px;height:64px;border-radius:50%;border:1.5px solid #B8933F;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:600;font-size:20px;color:#B8933F;margin-bottom:20px;}
+  h1{font-family:'Fraunces',serif;font-weight:500;font-size:28px;color:#E9E3D3;letter-spacing:0.01em;margin-bottom:10px;text-align:center;}
+  .sub{font-size:14px;color:#7C8A6E;max-width:440px;text-align:center;margin-bottom:28px;line-height:1.6;}
+  .card{background:#1F2A1B;border:1px solid rgba(233,227,211,0.14);border-radius:6px;padding:32px;width:100%;max-width:440px;}
+  .login-btn{display:block;text-align:center;background:#B8933F;color:#161D14;font-family:'IBM Plex Sans',sans-serif;font-weight:600;font-size:14px;letter-spacing:0.5px;text-decoration:none;padding:14px;border-radius:3px;transition:background 0.15s ease;}
+  .login-btn:hover{background:#C9A34C;}
+  .welcome{font-size:13px;color:#7C8A6E;margin-bottom:18px;text-align:center;}
+  .welcome strong{color:#E9E3D3;}
+  label{display:block;font-size:12px;letter-spacing:0.5px;text-transform:uppercase;color:#E9E3D3;margin-bottom:6px;margin-top:16px;}
   input[type="text"], input[type="password"]{
-    width:100%;background:#0e0f0c;border:1px solid #2a2d20;color:#e4e0d2;
+    width:100%;background:#161D14;border:1px solid rgba(233,227,211,0.14);color:#E9E3D3;
     padding:10px 12px;border-radius:3px;font-size:14px;font-family:inherit;
   }
-  input[type="text"]:focus, input[type="password"]:focus{outline:none;border-color:#c9a441;}
+  input[type="password"]{font-family:'IBM Plex Mono',monospace;font-size:13px;}
+  input:focus{outline:none;border-color:#B8933F;}
   .submit-btn{
-    width:100%;margin-top:22px;background:#7d1717;color:#e9cf7f;font-family:'Cinzel',serif;
-    font-weight:700;font-size:14px;letter-spacing:2px;padding:14px;border-radius:3px;
-    border:1px solid rgba(201,164,65,0.5);cursor:pointer;
+    width:100%;margin-top:22px;background:#B8933F;color:#161D14;font-family:'IBM Plex Sans',sans-serif;
+    font-weight:600;font-size:14px;letter-spacing:0.5px;padding:14px;border-radius:3px;
+    border:none;cursor:pointer;transition:background 0.15s ease;
   }
-  .submit-btn:hover{background:#932020;}
-  .warning{font-size:12px;color:#b9b39c;margin-top:16px;line-height:1.6;padding:12px;background:rgba(125,23,23,0.15);border:1px solid rgba(125,23,23,0.4);border-radius:3px;}
-  .logout{display:block;text-align:center;font-size:11px;color:#8a8570;margin-top:16px;text-decoration:none;}
-  .logout:hover{color:#b9b39c;}
+  .submit-btn:hover{background:#C9A34C;}
+  .warning{font-size:12px;color:#7C8A6E;margin-top:16px;line-height:1.6;padding:12px;background:rgba(184,147,63,0.10);border:1px solid rgba(140,113,51,0.4);border-radius:3px;}
+  .logout{display:block;text-align:center;font-size:11px;color:#7C8A6E;margin-top:16px;text-decoration:none;}
+  .logout:hover{color:#E9E3D3;}
 </style>
 
 <div class="stage">
-  <div class="masthead">British Army</div>
-  <div class="crest-wrap">
-    <img src="{{ url_for('static', filename='images/crest.png') }}" alt="British Army crest">
-  </div>
+  <div class="masthead">Darsh Industries</div>
+  <div class="seal">DI</div>
 
   {% if not logged_in %}
-    <h1>Register Your Bot</h1>
+    <h1>Commission Your Bot</h1>
     <p class="sub">Log in with Discord to verify your identity before submitting a bot token. This confirms the bot belongs to you.</p>
     <div class="card">
       <a class="login-btn" href="{{ url_for('tenant.tenant_login') }}">Login with Discord</a>
     </div>
   {% else %}
-    <h1>Register Your Bot</h1>
+    <h1>Commission Your Bot</h1>
     <div class="card">
       <p class="welcome">Logged in as <strong>{{ discord_username }}</strong></p>
 
@@ -56,11 +54,11 @@
         <label for="bot_token">Bot Token</label>
         <input type="password" id="bot_token" name="bot_token" placeholder="Paste your bot token here" required autocomplete="off">
 
-        <button type="submit" class="submit-btn">Submit for Review</button>
+        <button type="submit" class="submit-btn">Commission Bot</button>
       </form>
 
       <div class="warning">
-        Your token is encrypted immediately and reviewed before your bot goes live — it does not start automatically.
+        Your token is encrypted immediately on submission. Your bot goes live automatically under Darsh Industries hosting - there is no manual review step.
         Never share your bot token anywhere else.
       </div>
 

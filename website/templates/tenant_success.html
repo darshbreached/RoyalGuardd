@@ -1,38 +1,39 @@
 {% extends "base.html" %}
-{% block title %}Submitted — British Army{% endblock %}
+{% block title %}Commissioned — Darsh Industries{% endblock %}
 {% block content %}
 <style>
-  .stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;font-family:'Oswald','Arial Narrow',sans-serif;}
-  .masthead{font-size:12px;letter-spacing:4px;text-transform:uppercase;color:#b9b39c;margin-bottom:18px;opacity:0;animation:fade-up .35s ease-out 0s forwards;}
-  .crest-wrap{position:relative;width:150px;height:150px;opacity:0;transform:scale(.6) translateY(8px);animation:crest-in .55s cubic-bezier(.25,.7,.3,1.2) .05s forwards;}
-  .crest-wrap img{width:100%;height:100%;display:block;}
-  @keyframes crest-in{0%{opacity:0;transform:scale(.6) translateY(8px);}70%{opacity:1;transform:scale(1.04) translateY(-2px);}100%{opacity:1;transform:scale(1) translateY(0);}}
-  .impact-ring{position:absolute;top:50%;left:50%;width:150px;height:150px;transform:translate(-50%,-50%) scale(.85);border-radius:50%;border:1.5px solid #c9a441;opacity:0;animation:ring-out .5s ease-out .5s forwards;}
+  .stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;font-family:'IBM Plex Sans',sans-serif;}
+  .masthead{font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#7C8A6E;margin-bottom:18px;opacity:0;animation:fade-up .35s ease-out 0s forwards;}
+  .seal-wrap{position:relative;width:110px;height:110px;opacity:0;transform:scale(.6) translateY(8px);animation:seal-in .55s cubic-bezier(.25,.7,.3,1.2) .05s forwards;}
+  .seal-wrap .seal{width:100%;height:100%;border-radius:50%;border:2px solid #B8933F;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:600;font-size:34px;color:#B8933F;margin:0;}
+  @keyframes seal-in{0%{opacity:0;transform:scale(.6) translateY(8px);}70%{opacity:1;transform:scale(1.04) translateY(-2px);}100%{opacity:1;transform:scale(1) translateY(0);}}
+  .impact-ring{position:absolute;top:50%;left:50%;width:110px;height:110px;transform:translate(-50%,-50%) scale(.85);border-radius:50%;border:1.5px solid #B8933F;opacity:0;animation:ring-out .5s ease-out .5s forwards;}
   @keyframes ring-out{0%{opacity:.9;transform:translate(-50%,-50%) scale(.85);}100%{opacity:0;transform:translate(-50%,-50%) scale(1.25);}}
   .ribbon{position:relative;margin-top:24px;height:50px;width:340px;max-width:90vw;}
-  .ribbon-half{position:absolute;top:0;width:50%;height:100%;background:#7d1717;border-top:1px solid rgba(201,164,65,.45);opacity:0;}
+  .ribbon-half{position:absolute;top:0;width:50%;height:100%;background:#1F2A1B;border-top:1px solid rgba(184,147,63,.45);opacity:0;}
   .ribbon-left{left:0;clip-path:polygon(0 0,100% 0,88% 100%,0% 100%);transform:translateX(-100%);animation:slide-in .4s ease-out .65s forwards;}
   .ribbon-right{right:0;clip-path:polygon(12% 0,100% 0,100% 100%,0% 100%);transform:translateX(100%);animation:slide-in .4s ease-out .65s forwards;}
   @keyframes slide-in{to{opacity:1;transform:translateX(0);}}
-  .ribbon-text{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-family:'Cinzel','Georgia',serif;font-weight:700;font-size:18px;letter-spacing:2px;color:#e9cf7f;opacity:0;animation:fade-up .35s ease-out 1.05s forwards;}
-  .subtitle{margin-top:16px;font-size:13px;letter-spacing:1px;color:#b9b39c;opacity:0;text-align:center;max-width:360px;animation:fade-up .35s ease-out 1.3s forwards;}
+  .ribbon-text{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:500;font-size:17px;letter-spacing:0.5px;color:#B8933F;opacity:0;animation:fade-up .35s ease-out 1.05s forwards;}
+  .subtitle{margin-top:16px;font-size:13px;letter-spacing:0.3px;color:#7C8A6E;opacity:0;text-align:center;max-width:360px;animation:fade-up .35s ease-out 1.3s forwards;}
   @keyframes fade-up{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
-  @media (prefers-reduced-motion:reduce){.crest-wrap,.ribbon-left,.ribbon-right,.ribbon-text,.subtitle,.masthead{opacity:1!important;transform:none!important;animation:none!important;}.impact-ring{display:none;}}
+  .footer-note{margin-top:40px;font-size:11px;color:#7C8A6E;letter-spacing:0.5px;}
+  @media (prefers-reduced-motion:reduce){.seal-wrap,.ribbon-left,.ribbon-right,.ribbon-text,.subtitle,.masthead{opacity:1!important;transform:none!important;animation:none!important;}.impact-ring{display:none;}}
 </style>
 
 <div class="stage">
-  <div class="masthead">British Army</div>
-  <div class="crest-wrap">
-    <img src="{{ url_for('static', filename='images/crest.png') }}" alt="British Army crest">
+  <div class="masthead">Darsh Industries</div>
+  <div class="seal-wrap">
+    <div class="seal">DI</div>
     <div class="impact-ring"></div>
   </div>
   <div class="ribbon">
     <div class="ribbon-half ribbon-left"></div>
     <div class="ribbon-half ribbon-right"></div>
-    <div class="ribbon-text">Submission Received</div>
+    <div class="ribbon-text">Commissioned</div>
   </div>
-  <div class="subtitle">Thanks, {{ discord_username }} — your bot is awaiting review. You'll be notified in Discord once it's approved and live.</div>
+  <div class="subtitle">Thanks, {{ discord_username }} — your bot is live now, hosted under Darsh Industries. No further steps needed on your end.</div>
 </div>
 
-<div class="footer-note">British Army &middot; Verification Service</div>
+<div class="footer-note">Darsh Industries &middot; Bot Hosting</div>
 {% endblock %}
