@@ -97,7 +97,7 @@ class RoyalGuardBot(commands.Bot):
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
         log.info(f"Currently in {len(self.guilds)} server(s).")
         await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="the Royal Guard")
+            activity=discord.CustomActivity(name="Made by Darsh Industries")
         )
 
 
