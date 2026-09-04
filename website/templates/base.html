@@ -41,7 +41,11 @@
     header img {
       width: 32px;
       height: 32px;
+      min-width: 32px;
+      max-width: 32px;
       object-fit: contain;
+      display: block;
+      flex-shrink: 0;
     }
     header .wordmark {
       font-family: 'Space Grotesk', sans-serif;
@@ -50,6 +54,7 @@
       letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--text);
+      white-space: nowrap;
     }
     header .wordmark span {
       color: var(--text-dim);
@@ -75,7 +80,6 @@
 
     a { color: var(--glass); }
 
-    /* Shared building blocks available to any page extending this layout */
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -97,7 +101,7 @@
 </head>
 <body>
   <header>
-    <img src="{{ url_for('static', filename='images/logo.jpg') }}" alt="Darsh Industries">
+    <img src="{{ url_for('static', filename='images/logo.jpg') }}" alt="Darsh Industries" width="32" height="32">
     <div class="wordmark">Darsh <span>Industries</span></div>
   </header>
   <main>

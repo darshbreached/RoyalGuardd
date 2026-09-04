@@ -38,7 +38,7 @@
 <div class="wrap panel">
   {% if not logged_in %}
     <h1>Commission Your Bot</h1>
-    <p class="sub">Log in with Discord to verify your identity before submitting a bot token. This confirms the bot belongs to you.</p>
+    <p class="sub">Log in with Discord first so we know it's actually your bot.</p>
     <a class="login-btn" href="{{ url_for('tenant.tenant_login') }}">Login with Discord</a>
   {% else %}
     <h1>Commission Your Bot</h1>
@@ -57,8 +57,7 @@
     </form>
 
     <div class="warning">
-      Your token is encrypted immediately on submission. Your bot goes live automatically under Darsh Industries hosting — there is no manual review step.
-      Never share your bot token anywhere else.
+      Encrypted the moment you hit submit. Goes live automatically, no review queue.
     </div>
 
     <a class="logout" href="{{ url_for('tenant.tenant_logout') }}">Not you? Log out</a>
