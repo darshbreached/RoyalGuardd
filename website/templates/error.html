@@ -1,39 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Verification Failed — British Army{% endblock %}
+{% block title %}Error — Darsh Industries{% endblock %}
 {% block content %}
 <style>
-  .stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;font-family:'Oswald','Arial Narrow',sans-serif;}
-  .masthead{font-size:12px;letter-spacing:4px;text-transform:uppercase;color:#b9b39c;margin-bottom:18px;opacity:0;animation:fade-up .35s ease-out 0s forwards;}
-  .crest-wrap{position:relative;width:220px;height:220px;opacity:0;transform:scale(.6) translateY(8px);filter:grayscale(70%) brightness(0.75);animation:crest-in .55s cubic-bezier(.25,.7,.3,1.2) .05s forwards;}
-  .crest-wrap img{width:100%;height:100%;display:block;}
-  @keyframes crest-in{0%{opacity:0;transform:scale(.6) translateY(8px);}70%{opacity:1;transform:scale(1.04) translateY(-2px);}100%{opacity:1;transform:scale(1) translateY(0);}}
-  .impact-ring{position:absolute;top:50%;left:50%;width:220px;height:220px;transform:translate(-50%,-50%) scale(.85);border-radius:50%;border:1.5px solid #a33232;opacity:0;animation:ring-out .5s ease-out .5s forwards;}
-  @keyframes ring-out{0%{opacity:.9;transform:translate(-50%,-50%) scale(.85);}100%{opacity:0;transform:translate(-50%,-50%) scale(1.25);}}
-  .ribbon{position:relative;margin-top:24px;height:50px;width:320px;max-width:90vw;}
-  .ribbon-half{position:absolute;top:0;width:50%;height:100%;background:#2a2a2a;border-top:1px solid rgba(163,50,50,.5);opacity:0;}
-  .ribbon-left{left:0;clip-path:polygon(0 0,100% 0,88% 100%,0% 100%);transform:translateX(-100%);animation:slide-in .4s ease-out .65s forwards;}
-  .ribbon-right{right:0;clip-path:polygon(12% 0,100% 0,100% 100%,0% 100%);transform:translateX(100%);animation:slide-in .4s ease-out .65s forwards;}
-  @keyframes slide-in{to{opacity:1;transform:translateX(0);}}
-  .ribbon-text{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-family:'Cinzel','Georgia',serif;font-weight:700;font-size:18px;letter-spacing:2px;color:#d97b7b;opacity:0;animation:fade-up .35s ease-out 1.05s forwards;}
-  .subtitle{margin-top:16px;font-size:13px;letter-spacing:1px;color:#b9b39c;opacity:0;text-align:center;max-width:320px;animation:fade-up .35s ease-out 1.3s forwards;}
+  .wrap{display:flex;flex-direction:column;align-items:center;font-family:'Inter',sans-serif;text-align:center;}
+
+  .ring-wrap{position:relative;width:84px;height:84px;opacity:0;transform:scale(.7);animation:ring-in .5s cubic-bezier(.25,.8,.3,1.15) .05s forwards;}
+  .ring{width:100%;height:100%;border-radius:50%;border:2px solid #C4453D;display:flex;align-items:center;justify-content:center;}
+  .ring svg{width:32px;height:32px;stroke:#C4453D;}
+  @keyframes ring-in{0%{opacity:0;transform:scale(.7);}70%{opacity:1;transform:scale(1.05);}100%{opacity:1;transform:scale(1);}}
+
+  h1{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:20px;color:#F2F4F7;margin:22px 0 10px;opacity:0;animation:fade-up .35s ease-out .35s forwards;}
+  .message{font-size:13.5px;color:#8B93A3;max-width:360px;line-height:1.6;opacity:0;animation:fade-up .35s ease-out .5s forwards;}
+
+  .retry{
+    display:inline-block;margin-top:26px;background:#D7DEE8;color:#14161B;font-family:'Inter',sans-serif;
+    font-weight:600;font-size:13.5px;text-decoration:none;padding:11px 22px;border-radius:6px;
+    transition:background .15s ease;opacity:0;animation:fade-up .35s ease-out .65s forwards;
+  }
+  .retry:hover{background:#EAF0F8;}
+
   @keyframes fade-up{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
-  @media (prefers-reduced-motion:reduce){.crest-wrap,.ribbon-left,.ribbon-right,.ribbon-text,.subtitle,.masthead{opacity:1!important;transform:none!important;animation:none!important;}.impact-ring{display:none;}}
+
+  @media (prefers-reduced-motion:reduce){.ring-wrap,h1,.message,.retry{opacity:1!important;transform:none!important;animation:none!important;}}
 </style>
 
-<div class="stage">
-  <div class="masthead">British Army</div>
-  <div class="crest-wrap">
-    <img src="{{ url_for('static', filename='images/crest.png') }}" alt="British Army crest">
-    <div class="impact-ring"></div>
+<div class="wrap">
+  <div class="ring-wrap">
+    <div class="ring">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+    </div>
   </div>
-  <div class="ribbon">
-    <div class="ribbon-half ribbon-left"></div>
-    <div class="ribbon-half ribbon-right"></div>
-    <div class="ribbon-text">Verification Failed</div>
-  </div>
-  <div class="subtitle">{{ message }}</div>
+  <h1>Something went wrong</h1>
+  <div class="message">{{ message }}</div>
+  <a class="retry" href="/">Return to Darsh Industries</a>
 </div>
-
-<p style="text-align:center;margin-top:1.5rem;">If this keeps happening, go back to Discord and request a new verification link.</p>
-<div class="footer-note">British Army &middot; Verification Service</div>
 {% endblock %}
