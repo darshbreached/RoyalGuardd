@@ -13,9 +13,12 @@ Handles the Roblox OAuth2 authorization + callback flow.
 
 import os
 import time
+import logging
 import requests
 from flask import Blueprint, request, redirect, render_template
 from pymongo import MongoClient
+
+log = logging.getLogger("RoyalGuard")
 
 oauth_bp = Blueprint("oauth", __name__)
 
@@ -142,6 +145,7 @@ def callback():
     })
 
     if token_resp.status_code != 200:
+        log.error(f"Roblox token exchange failed: {token_resp.status_code} {token_resp.text}")
         return render_template("error.html", message="Failed to exchange authorization code with Roblox."), 400
 
     access_token = token_resp.json().get("access_token")
@@ -150,6 +154,7 @@ def callback():
         ROBLOX_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"}
     )
     if userinfo_resp.status_code != 200:
+        log.error(f"Roblox userinfo fetch failed: {userinfo_resp.status_code} {userinfo_resp.text}")
         return render_template("error.html", message="Failed to fetch your Roblox profile."), 400
 
     profile = userinfo_resp.json()
