@@ -14,12 +14,15 @@ as it picks up the new document.
 
 import os
 import time
+import logging
 import secrets
 import requests
 from flask import Blueprint, request, redirect, render_template, session, url_for
 
 from pymongo import MongoClient
 from utils.token_crypto import encrypt_token
+
+log = logging.getLogger("RoyalGuard")
 
 tenant_bp = Blueprint("tenant", __name__)
 
@@ -78,6 +81,7 @@ def tenant_callback():
     )
 
     if token_resp.status_code != 200:
+        log.error(f"Discord token exchange failed: {token_resp.status_code} {token_resp.text}")
         return render_template("error.html", message="Failed to log in with Discord. Please try again."), 400
 
     access_token = token_resp.json().get("access_token")
