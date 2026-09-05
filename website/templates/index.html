@@ -1,199 +1,89 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Royal Guard — British Army Discord Bot</title>
+{% extends "base.html" %}
+{% block title %}Darsh Industries{% endblock %}
+{% block content %}
 <style>
-  :root{
-    --bg:#0e0f0c;
-    --bg-2:#15170f;
-    --card:#191b13;
-    --border:#2a2d20;
-    --crest-red:#7d1717;
-    --gold:#c9a441;
-    --gold-bright:#e9cf7f;
-    --parchment:#b9b39c;
-    --text:#e4e0d2;
+  #splash{
+    position:fixed;inset:0;z-index:100;
+    background:#14161B;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    cursor:pointer;
+    transition:opacity 0.6s ease, visibility 0.6s ease;
   }
-  *{box-sizing:border-box; margin:0; padding:0;}
-  html{scroll-behavior:smooth;}
-  body{
-    background:var(--bg);
-    color:var(--text);
-    font-family:'Oswald','Arial Narrow',sans-serif;
-    line-height:1.6;
+  #splash.hidden{opacity:0;visibility:hidden;pointer-events:none;}
+
+  #splash .logo-wrap{
+    width:120px;height:120px;
+    opacity:0;transform:scale(0.75) translateY(10px);
+    animation:intro 0.9s cubic-bezier(0.16,1,0.3,1) forwards;
   }
-  .wrap{max-width:1040px; margin:0 auto; padding:0 24px;}
-  nav{
-    display:flex; align-items:center; justify-content:space-between;
-    padding:20px 24px; border-bottom:1px solid var(--border);
-    position:sticky; top:0; background:rgba(14,15,12,0.92); backdrop-filter:blur(6px); z-index:10;
+  #splash img{
+    width:100%;height:100%;object-fit:contain;
+    animation:breathe 3.4s ease-in-out 1s infinite;
   }
-  .nav-brand{display:flex; align-items:center; gap:10px; font-family:'Cinzel',serif; font-weight:700; letter-spacing:1px; color:var(--gold-bright); font-size:15px;}
-  .nav-brand img{width:28px; height:28px;}
-  nav a.btn{
-    font-size:13px; letter-spacing:1px; text-transform:uppercase;
-    color:var(--gold-bright); text-decoration:none; border:1px solid var(--gold);
-    padding:8px 18px; border-radius:2px; transition:background .2s;
+  @keyframes intro{to{opacity:1;transform:scale(1) translateY(0);}}
+  @keyframes breathe{
+    0%,100%{filter:drop-shadow(0 0 4px rgba(143,166,201,0.14));transform:scale(1);}
+    50%{filter:drop-shadow(0 0 16px rgba(143,166,201,0.4));transform:scale(1.03);}
   }
-  nav a.btn:hover{background:rgba(201,164,65,0.12);}
-  .hero{text-align:center; padding:90px 24px 70px;}
-  .masthead{font-size:12px; letter-spacing:5px; text-transform:uppercase; color:var(--parchment); margin-bottom:20px;}
-  .hero img.crest{width:140px; height:140px; margin-bottom:24px;}
-  .hero h1{
-    font-family:'Cinzel',serif; font-weight:700; font-size:44px;
-    color:var(--gold-bright); letter-spacing:1px; margin-bottom:14px;
+
+  #splash .enter-hint{
+    margin-top:26px;font-family:'Inter',sans-serif;font-size:12.5px;letter-spacing:0.14em;
+    text-transform:uppercase;color:#565B66;
+    opacity:0;animation:fade-in 0.6s ease-out 0.6s forwards, pulse 2s ease-in-out 1.6s infinite;
   }
-  .hero p.sub{
-    font-size:17px; color:var(--parchment); max-width:520px; margin:0 auto 34px;
-  }
-  .cta-row{display:flex; gap:16px; justify-content:center; flex-wrap:wrap;}
-  .cta-primary, .cta-secondary{
-    display:inline-block; font-family:'Cinzel',serif; font-weight:700; font-size:14px;
-    letter-spacing:2px; text-decoration:none; padding:14px 32px; border-radius:2px;
-  }
-  .cta-primary{background:var(--crest-red); color:var(--gold-bright); border:1px solid rgba(201,164,65,0.5);}
-  .cta-primary:hover{background:#932020;}
-  .cta-secondary{color:var(--parchment); border:1px solid var(--border);}
-  .cta-secondary:hover{border-color:var(--gold);}
-  .section-title{
-    text-align:center; font-family:'Cinzel',serif; font-weight:700; font-size:26px;
-    color:var(--gold-bright); margin-bottom:8px; letter-spacing:1px;
-  }
-  .section-sub{text-align:center; color:var(--parchment); font-size:14px; margin-bottom:44px;}
-  .features{padding:80px 24px; border-top:1px solid var(--border);}
-  .grid{
-    display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:18px;
-  }
-  .feature-card{
-    background:var(--card); border:1px solid var(--border); border-radius:4px;
-    padding:24px; transition:border-color .2s;
-  }
-  .feature-card:hover{border-color:var(--gold);}
-  .feature-card .icon{font-size:22px; margin-bottom:12px; color:var(--gold);}
-  .feature-card h3{font-size:15px; letter-spacing:1px; text-transform:uppercase; color:var(--gold-bright); margin-bottom:8px;}
-  .feature-card p{font-size:13.5px; color:var(--parchment);}
-  .how{padding:80px 24px; border-top:1px solid var(--border); background:var(--bg-2);}
-  .steps{display:flex; flex-direction:column; gap:0; max-width:600px; margin:0 auto;}
-  .step{display:flex; gap:20px; padding:22px 0; border-bottom:1px solid var(--border);}
-  .step:last-child{border-bottom:none;}
-  .step-num{
-    font-family:'Cinzel',serif; font-weight:700; font-size:20px; color:var(--gold);
-    min-width:36px;
-  }
-  .step h4{font-size:15px; letter-spacing:0.5px; color:var(--text); margin-bottom:4px;}
-  .step p{font-size:13.5px; color:var(--parchment);}
-  footer{padding:50px 24px; text-align:center; border-top:1px solid var(--border);}
-  footer .masthead{margin-bottom:10px;}
-  footer p{font-size:12.5px; color:var(--parchment); opacity:0.7;}
-  footer a{color:var(--gold); text-decoration:none;}
-  @media (max-width:600px){
-    .hero h1{font-size:32px;}
-  }
+  @keyframes fade-in{to{opacity:1;}}
+  @keyframes pulse{0%,100%{opacity:0.5;}50%{opacity:1;}}
+
+  .wrap{display:flex;flex-direction:column;align-items:center;text-align:center;font-family:'Inter',sans-serif;max-width:480px;}
+  .badge{margin-bottom:22px;}
+  h1{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:30px;color:#F2F4F7;line-height:1.25;letter-spacing:-0.01em;margin:0 0 14px;}
+  .sub{font-size:14.5px;color:#8B93A3;line-height:1.65;max-width:400px;margin:0 0 32px;}
+  .actions{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;}
+  .btn-primary{background:#D7DEE8;color:#14161B;font-family:'Inter',sans-serif;font-weight:600;font-size:14px;text-decoration:none;padding:12px 24px;border-radius:6px;transition:background .15s ease, transform .1s ease;}
+  .btn-primary:hover{background:#EAF0F8;}
+  .btn-primary:active{transform:scale(0.99);}
+  .btn-secondary{background:transparent;color:#F2F4F7;font-family:'Inter',sans-serif;font-weight:500;font-size:14px;text-decoration:none;padding:12px 22px;border-radius:6px;border:1px solid rgba(215,222,232,0.16);transition:border-color .15s ease, background .15s ease;}
+  .btn-secondary:hover{border-color:rgba(215,222,232,0.32);background:rgba(215,222,232,0.04);}
+  .links{margin-top:44px;display:flex;gap:20px;font-size:12.5px;color:#565B66;}
+  .links a{color:#565B66;text-decoration:none;}
+  .links a:hover{color:#8B93A3;}
 </style>
-</head>
-<body>
 
-<nav>
-  <div class="nav-brand">
-    <img src="{{ url_for('static', filename='images/crest.png') }}" alt="crest">
-    ROYAL GUARD
+<div id="splash">
+  <div class="logo-wrap">
+    <img src="{{ url_for('static', filename='images/logo-mark.png') }}" alt="Darsh Industries">
   </div>
-  <a class="btn" href="#invite">Add to Discord</a>
-</nav>
+  <div class="enter-hint">Click to enter</div>
+</div>
 
-<section class="hero">
-  <div class="masthead">British Army &middot; Roblox Military Roleplay</div>
-  <img class="crest" src="{{ url_for('static', filename='images/crest.png') }}" alt="Royal Guard crest">
-  <h1>Royal Guard</h1>
-  <p class="sub">A free Discord bot built for British Army Roblox roleplay communities — Roblox verification, rank sync, tickets, moderation, and anti-nuke, all in one place.</p>
-  <div class="cta-row">
-    <a class="cta-primary" id="invite" href="https://discord.com/oauth2/authorize?client_id=YOUR_BOT_CLIENT_ID&permissions=8&scope=bot%20applications.commands">Add to Discord</a>
-    <a class="cta-secondary" href="#features">See Features</a>
+<div class="wrap">
+  <div class="badge"><span class="badge">Bot Hosting</span></div>
+  <h1>Discord bot hosting, run by Darsh Industries</h1>
+  <p class="sub">Commission your own hosted bot, verify a Roblox account, or manage an existing server — everything runs through here.</p>
+
+  <div class="actions">
+    <a class="btn-primary" href="{{ url_for('tenant.tenant_register') }}">Commission a bot</a>
+    <a class="btn-secondary" href="/privacy">Privacy</a>
   </div>
-</section>
 
-<section class="features" id="features">
-  <div class="wrap">
-    <div class="section-title">Everything Your Regiment Needs</div>
-    <div class="section-sub">One bot, no separate subscriptions for verification, tickets, or moderation.</div>
-    <div class="grid">
-      <div class="feature-card">
-        <div class="icon">&#9878;</div>
-        <h3>Roblox Verification</h3>
-        <p>Secure OAuth2 verification links Discord accounts to Roblox — no password sharing, no cookie phishing.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#127894;</div>
-        <h3>Rank Sync</h3>
-        <p>Automatic Discord role assignment based on live Roblox group rank, with multi-role support per rank.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#128203;</div>
-        <h3>Background Checks</h3>
-        <p>Full Discord + Roblox account history for any member — account age, groups, alerts — in one command.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#127915;</div>
-        <h3>Ticket System</h3>
-        <p>Multi-category tickets for reports, applications, and support requests, with transcripts and staff routing.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#128737;</div>
-        <h3>Moderation &amp; Automod</h3>
-        <p>Warnings, mutes, bans, and configurable automod — spam, invite links, and word filters, all built in.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#9889;</div>
-        <h3>Anti-Nuke</h3>
-        <p>Guards against mass-ban, mass-channel-delete, and other raid patterns before they wreck your server.</p>
-      </div>
-    </div>
+  <div class="links">
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="/health">Status</a>
   </div>
-</section>
+</div>
 
-<section class="how">
-  <div class="wrap">
-    <div class="section-title">Getting Started</div>
-    <div class="section-sub">Set up in under five minutes.</div>
-    <div class="steps">
-      <div class="step">
-        <div class="step-num">1</div>
-        <div>
-          <h4>Add Royal Guard to your server</h4>
-          <p>Click "Add to Discord" and authorize the bot with the required permissions.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">2</div>
-        <div>
-          <h4>Bind your Roblox group</h4>
-          <p>Run <code>/groupbind</code> to connect your Roblox group, then <code>/rankbind</code> to map ranks to Discord roles.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">3</div>
-        <div>
-          <h4>Set admin levels</h4>
-          <p>Use <code>/setadmin</code> to give your staff team the right permission tier for your server.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">4</div>
-        <div>
-          <h4>You're live</h4>
-          <p>Members verify with <code>/verify</code> and roles sync automatically. Run <code>/help</code> any time for the full command list.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<footer>
-  <div class="masthead">British Army</div>
-  <p>Royal Guard is a free, independently run Discord bot. Not affiliated with Roblox Corporation or the British Army.</p>
-</footer>
-
-</body>
-</html>
+<script>
+  (function() {
+    var splash = document.getElementById('splash');
+    if (sessionStorage.getItem('di_entered')) {
+      splash.style.display = 'none';
+      return;
+    }
+    splash.addEventListener('click', function() {
+      splash.classList.add('hidden');
+      sessionStorage.setItem('di_entered', '1');
+    });
+  })();
+</script>
+{% endblock %}
