@@ -40,6 +40,8 @@ class Database:
         self.tenants = self.db["tenants"]
         self.join_tracking = self.db["join_tracking"]
         self.pending_tenants = self.db["pending_tenants"]
+        self.global_bans = self.db["global_bans"]
+        self.global_ban_subscriptions = self.db["global_ban_subscriptions"]
 
     async def ensure_indexes(self):
         import logging
@@ -53,11 +55,6 @@ class Database:
 
         await _safe_create_index(self.verifications, "discord_id", unique=True)
         await _safe_create_index(self.verifications, "roblox_id")
-        # NOTE: kept as (guild_id, discord_id) even though admin_levels now stores
-        # both users and roles under "discord_id" - Discord snowflakes are unique
-        # across users/roles/etc in practice, so a user ID and role ID colliding
-        # is not a realistic concern. If you ever want to be fully strict, this
-        # would need to become a compound (guild_id, discord_id, type) index instead.
         await _safe_create_index(self.admin_levels, [("guild_id", 1), ("discord_id", 1)], unique=True)
         await _safe_create_index(self.groupbinds, "guild_id")
         await _safe_create_index(self.rankbinds, "guild_id")
@@ -78,6 +75,8 @@ class Database:
         await _safe_create_index(self.tenants, "owner_discord_id")
         await _safe_create_index(self.tenants, "status")
         await _safe_create_index(self.join_tracking, "timestamp", expireAfterSeconds=120)
+        await _safe_create_index(self.global_bans, "discord_id", unique=True)
+        await _safe_create_index(self.global_ban_subscriptions, "guild_id", unique=True)
 
     # VERIFICATION (global, not per-guild)
     async def get_verification(self, discord_id: int):
@@ -100,11 +99,7 @@ class Database:
         await self.verifications.delete_one({"discord_id": str(discord_id)})
 
     # ADMIN LEVELS (per-guild) - supports individual users AND Discord roles.
-    # Docs look like: {guild_id, discord_id, level, type: "user"|"role", role_name?}
-    # Legacy docs written before this change have no "type" field - they are
-    # always treated as type="user" by the queries below ({"type": {"$ne": "role"}}).
     async def get_admin_level(self, guild_id: int, discord_id: int) -> int:
-        """User's own explicit level only (ignores any roles they hold)."""
         doc = await self.admin_levels.find_one({
             "guild_id": str(guild_id),
             "discord_id": str(discord_id),
@@ -149,8 +144,6 @@ class Database:
         })
 
     async def get_effective_admin_level(self, guild_id: int, discord_id: int, role_ids: list = None) -> int:
-        """Highest of: this user's own explicit level, and the level of any role
-        in role_ids that has been granted an admin level."""
         levels = [await self.get_admin_level(guild_id, discord_id)]
         if role_ids:
             cursor = self.admin_levels.find({
@@ -163,7 +156,6 @@ class Database:
         return max(levels)
 
     async def get_all_admin_levels(self, guild_id: int):
-        """All user- and role-level admin_levels docs for this guild (for /admins view)."""
         cursor = self.admin_levels.find({"guild_id": str(guild_id)})
         return [doc async for doc in cursor]
 
@@ -187,7 +179,7 @@ class Database:
         cursor = self.groupbinds.find({"guild_id": str(guild_id)})
         return [doc async for doc in cursor]
 
-    # RANKBINDS (unique on guild+group+rank+role, so multiple roles per rank work)
+    # RANKBINDS
     async def add_rankbind(self, guild_id: int, group_id: int, rank_id: int, role_id: int, rank_name: str = "", nickname_prefix: str = ""):
         await self.rankbinds.update_one(
             {"guild_id": str(guild_id), "group_id": str(group_id), "rank_id": rank_id, "role_id": str(role_id)},
@@ -441,7 +433,7 @@ class Database:
         cutoff = time.time() - window_seconds
         return await self.join_tracking.count_documents({"guild_id": str(guild_id), "timestamp": {"$gte": cutoff}})
 
-    # PENDING TENANTS (awaiting owner approval, submitted via /register panel)
+    # PENDING TENANTS
     async def add_pending_tenant(self, owner_discord_id: int, encrypted_token: str, bot_name: str = ""):
         doc = {
             "owner_discord_id": owner_discord_id,
@@ -461,6 +453,50 @@ class Database:
 
     async def remove_pending_tenant(self, pending_id: str):
         await self.pending_tenants.delete_one({"_id": ObjectId(pending_id)})
+
+    # GLOBAL BANS (opt-in cross-server enforcement)
+    # A guild is only ever affected if it explicitly subscribes via
+    # global_ban_subscriptions - a global ban never touches a guild that
+    # hasn't opted in.
+    async def add_global_ban(self, discord_id: int, reason: str, banned_by: int, source_guild_id: int, source_guild_name: str = ""):
+        doc = {
+            "discord_id": str(discord_id),
+            "reason": reason,
+            "banned_by": str(banned_by),
+            "source_guild_id": str(source_guild_id),
+            "source_guild_name": source_guild_name,
+            "banned_at": time.time(),
+        }
+        await self.global_bans.update_one({"discord_id": str(discord_id)}, {"$set": doc}, upsert=True)
+        return doc
+
+    async def remove_global_ban(self, discord_id: int):
+        await self.global_bans.delete_one({"discord_id": str(discord_id)})
+
+    async def get_global_ban(self, discord_id: int):
+        return await self.global_bans.find_one({"discord_id": str(discord_id)})
+
+    async def list_global_bans(self):
+        cursor = self.global_bans.find({})
+        return [doc async for doc in cursor]
+
+    async def subscribe_guild_to_global_bans(self, guild_id: int):
+        await self.global_ban_subscriptions.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "subscribed_at": time.time()}},
+            upsert=True,
+        )
+
+    async def unsubscribe_guild_from_global_bans(self, guild_id: int):
+        await self.global_ban_subscriptions.delete_one({"guild_id": str(guild_id)})
+
+    async def is_guild_subscribed_to_global_bans(self, guild_id: int) -> bool:
+        doc = await self.global_ban_subscriptions.find_one({"guild_id": str(guild_id)})
+        return doc is not None
+
+    async def list_subscribed_guild_ids(self):
+        cursor = self.global_ban_subscriptions.find({})
+        return [doc["guild_id"] async for doc in cursor]
 
 
 db = Database()
