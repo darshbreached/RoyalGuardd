@@ -6,6 +6,14 @@ cogs/rankrequest.py
 /rank request         - lets a verified member request a rank change;
                         posts an Approve/Deny embed to the configured
                         channel, gated to members with the approver role
+
+group and rank are both autocompleted: group choices come from this
+guild's groupbinds, rank choices come from that group's live Roblox
+roles - so nobody types a raw group ID or rank name by hand.
+
+An optional image attachment (proof) can be attached to a request - it's
+re-uploaded as a real file on the approval embed rather than relying on
+the raw attachment CDN URL, since those can expire.
 """
 
 import discord
@@ -76,10 +84,6 @@ class RankRequestView(discord.ui.View):
                 embed=embeds.error_embed("Not Verified", f"<@{request['requester_id']}> is no longer verified - cannot rank them."),
             )
 
-        # rank_id stored on the request is the Roblox *rank number* (1-255),
-        # but Roblox's ranking endpoint needs the role's unique *id* - these
-        # are different fields on the same group role, so resolve one to
-        # the other before calling set_group_rank.
         try:
             group_roles = await roblox.get_group_roles(int(request["group_id"]))
         except Exception as e:
@@ -192,15 +196,46 @@ class RankRequest(commands.Cog):
 
     rank_group = app_commands.Group(name="rank", description="Rank request commands.")
 
+    async def _group_autocomplete(self, interaction: discord.Interaction, current: str):
+        groupbinds = await db.list_groupbinds(interaction.guild.id)
+        choices = [
+            app_commands.Choice(name=g["group_name"], value=g["group_id"])
+            for g in groupbinds
+            if current.lower() in g["group_name"].lower()
+        ]
+        return choices[:25]
+
+    async def _rank_autocomplete(self, interaction: discord.Interaction, current: str):
+        group_id = interaction.namespace.group
+        if not group_id:
+            return []
+        try:
+            roles = await roblox.get_group_roles(int(group_id))
+        except Exception:
+            return []
+        choices = [
+            app_commands.Choice(name=r["name"], value=r["rank"])
+            for r in roles
+            if current.lower() in r["name"].lower()
+        ]
+        return choices[:25]
+
     @rank_group.command(name="request", description="Request a rank change in a bound Roblox group.")
-    @app_commands.describe(group_id="The Roblox group ID", rank_id="The target rank number (1-255)", rank_name="The target rank's display name")
+    @app_commands.describe(group="The Roblox group", rank="The target rank", proof="Optional screenshot proving you're eligible")
+    @app_commands.autocomplete(group=_group_autocomplete, rank=_rank_autocomplete)
     async def request(
         self,
         interaction: discord.Interaction,
-        group_id: str,
-        rank_id: int,
-        rank_name: str,
+        group: str,
+        rank: int,
+        proof: discord.Attachment = None,
     ):
+        if proof is not None and not (proof.content_type or "").startswith("image/"):
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("Invalid Proof", "Proof must be an image file."),
+                ephemeral=True,
+            )
+
         config = await db.get_rank_request_config(interaction.guild.id)
         channel_id = config.get("requests_channel_id")
         if not channel_id:
@@ -217,13 +252,23 @@ class RankRequest(commands.Cog):
             )
 
         groupbinds = await db.list_groupbinds(interaction.guild.id)
-        group_name = next((g["group_name"] for g in groupbinds if g["group_id"] == group_id), group_id)
+        group_name = next((g["group_name"] for g in groupbinds if g["group_id"] == group), group)
+
+        try:
+            group_roles = await roblox.get_group_roles(int(group))
+        except Exception as e:
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("Roblox Lookup Failed", str(e)),
+                ephemeral=True,
+            )
+        matching_role = next((r for r in group_roles if r.get("rank") == rank), None)
+        rank_name = matching_role["name"] if matching_role else f"Rank {rank}"
 
         request = await db.create_rank_request(
             guild_id=interaction.guild.id,
             requester_id=interaction.user.id,
-            group_id=int(group_id),
-            rank_id=rank_id,
+            group_id=int(group),
+            rank_id=rank,
             rank_name=rank_name,
             group_name=group_name,
         )
@@ -232,8 +277,18 @@ class RankRequest(commands.Cog):
             "New Rank Request",
             f"Requester: {interaction.user.mention}\nGroup: {group_name}\nRequested rank: **{rank_name}**"
         )
+
         view = RankRequestView(request["_id"])
-        await channel.send(embed=embed, view=view)
+
+        if proof is not None:
+            # Re-upload as a real file attached to this specific message rather
+            # than trusting the raw attachment CDN URL, which can expire -
+            # embedding via attachment:// keeps it viewable indefinitely.
+            proof_file = await proof.to_file(filename="proof.png")
+            embed.set_image(url="attachment://proof.png")
+            await channel.send(embed=embed, view=view, file=proof_file)
+        else:
+            await channel.send(embed=embed, view=view)
 
         await interaction.response.send_message(
             embed=embeds.success_embed("Request Submitted", f"Your rank request for **{rank_name}** has been sent for approval."),
