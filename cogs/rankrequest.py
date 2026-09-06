@@ -66,13 +66,49 @@ class RankRequestView(discord.ui.View):
 
         await interaction.response.defer()
 
+        verification = await db.get_verification(int(request["requester_id"]))
+        if not verification:
+            await db.update_rank_request_status(self.request_id, "error", resolved_by=interaction.user.id)
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(view=self)
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Not Verified", f"<@{request['requester_id']}> is no longer verified - cannot rank them."),
+            )
+
+        # rank_id stored on the request is the Roblox *rank number* (1-255),
+        # but Roblox's ranking endpoint needs the role's unique *id* - these
+        # are different fields on the same group role, so resolve one to
+        # the other before calling set_group_rank.
+        try:
+            group_roles = await roblox.get_group_roles(int(request["group_id"]))
+        except Exception as e:
+            await db.update_rank_request_status(self.request_id, "error", resolved_by=interaction.user.id)
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(view=self)
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Roblox Lookup Failed", str(e)),
+            )
+
+        matching_role = next((r for r in group_roles if r.get("rank") == request["rank_id"]), None)
+        if not matching_role:
+            await db.update_rank_request_status(self.request_id, "error", resolved_by=interaction.user.id)
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(view=self)
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Rank Not Found", f"Rank **{request['rank_name']}** no longer exists in this group - it may have been renamed or removed."),
+            )
+
         try:
             await roblox.set_group_rank(
                 group_id=int(request["group_id"]),
-                roblox_id=int(request.get("roblox_id", 0)) if request.get("roblox_id") else None,
-                rank_id=request["rank_id"],
+                roblox_user_id=int(verification["roblox_id"]),
+                role_id=matching_role["id"],
+                guild_id=interaction.guild.id,
             )
-        except Exception as e:
+        except RuntimeError as e:
             await db.update_rank_request_status(self.request_id, "error", resolved_by=interaction.user.id)
             for item in self.children:
                 item.disabled = True
@@ -157,7 +193,7 @@ class RankRequest(commands.Cog):
     rank_group = app_commands.Group(name="rank", description="Rank request commands.")
 
     @rank_group.command(name="request", description="Request a rank change in a bound Roblox group.")
-    @app_commands.describe(group_id="The Roblox group ID", rank_id="The target rank ID", rank_name="The target rank's display name")
+    @app_commands.describe(group_id="The Roblox group ID", rank_id="The target rank number (1-255)", rank_name="The target rank's display name")
     async def request(
         self,
         interaction: discord.Interaction,
