@@ -17,6 +17,12 @@ replaces) a "Darsh Industries" webhook in that channel, using the company
 logo as its avatar, and stores the webhook URL so
 website/routes/oauth.py can post verification logs (IP, location, etc.)
 there per-guild instead of to one shared global webhook.
+
+NOTE: discord.ui.ChannelSelect's selected value is a lightweight
+AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
+.create_webhook(). It must be resolved via interaction.guild.get_channel()
+(or fetch_channel() as a fallback if it's not cache-warm) before any
+webhook operation.
 """
 
 import os
@@ -127,7 +133,8 @@ async def _create_verification_webhook(channel: discord.TextChannel) -> str:
     """Creates (or replaces) a 'Darsh Industries' webhook in the given
     channel, using the company logo as its avatar, and returns its URL.
     Re-running /setup on this channel replaces the old webhook instead of
-    piling up duplicates."""
+    piling up duplicates. `channel` must be a real TextChannel object
+    (resolved from cache/fetch), not a ChannelSelect AppCommandChannel stub."""
     avatar_bytes = None
     try:
         async with aiohttp.ClientSession() as session:
@@ -177,24 +184,36 @@ class ChannelPicker(discord.ui.ChannelSelect):
         self.option_key = option_key
 
     async def callback(self, interaction: discord.Interaction):
-        channel = self.values[0]
-        await db.set_guild_config(interaction.guild.id, **{self.option_key: str(channel.id)})
+        selected = self.values[0]
+        await db.set_guild_config(interaction.guild.id, **{self.option_key: str(selected.id)})
         cat_key, meta = _find_option(self.option_key)
 
-        extra_note = ""
         if self.option_key == "verification_logs_channel_id":
             await interaction.response.defer()
-            try:
-                webhook_url = await _create_verification_webhook(channel)
-                await db.set_guild_config(interaction.guild.id, verification_webhook_url=webhook_url)
-                extra_note = "\n\nA **Darsh Industries** webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
-            except Exception as e:
-                extra_note = f"\n\n⚠️ Channel saved, but creating the logging webhook failed: {e}"
 
-            embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {channel.mention}.{extra_note}")
+            # Resolve the real TextChannel - selected here is only a
+            # lightweight AppCommandChannel stub with no webhook methods.
+            real_channel = interaction.guild.get_channel(selected.id)
+            if real_channel is None:
+                try:
+                    real_channel = await interaction.guild.fetch_channel(selected.id)
+                except Exception:
+                    real_channel = None
+
+            if real_channel is None:
+                extra_note = "\n\n⚠️ Channel saved, but the bot couldn't resolve that channel to set up the logging webhook. Check its permissions and try again."
+            else:
+                try:
+                    webhook_url = await _create_verification_webhook(real_channel)
+                    await db.set_guild_config(interaction.guild.id, verification_webhook_url=webhook_url)
+                    extra_note = "\n\nA **Darsh Industries** webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
+                except Exception as e:
+                    extra_note = f"\n\n⚠️ Channel saved, but creating the logging webhook failed: {e}"
+
+            embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {selected.mention}.{extra_note}")
             return await interaction.edit_original_response(embed=embed, view=ResultView(cat_key))
 
-        embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {channel.mention}.")
+        embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {selected.mention}.")
         await interaction.response.edit_message(embed=embed, view=ResultView(cat_key))
 
 
