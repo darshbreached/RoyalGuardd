@@ -7,8 +7,14 @@ Handles the Roblox OAuth2 authorization + callback flow.
 /callback?code=...&state=... -> exchanges the code for a token, fetches the
                                   Roblox profile, geolocates the requester's
                                   IP, writes everything to MongoDB, and posts
-                                  a "Verification Logs" embed to Discord via
-                                  webhook.
+                                  a "Verification Logs" embed to Discord.
+
+The oauth_states record (created by cogs/verification.py) carries which
+guild the /verify flow was started in, so the log gets posted to that
+guild's own "Darsh Industries" webhook (set via /setup ->
+Verification Logs Channel) if one exists. Falls back to the global
+DISCORD_VERIFICATION_WEBHOOK env var for guilds that haven't set one up,
+or for states created before this field existed.
 """
 
 import os
@@ -29,7 +35,7 @@ ROBLOX_USERINFO_URL = "https://apis.roblox.com/oauth/v1/userinfo"
 CLIENT_ID = os.getenv("ROBLOX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("ROBLOX_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("ROBLOX_REDIRECT_URI")
-VERIFICATION_WEBHOOK = os.getenv("DISCORD_VERIFICATION_WEBHOOK")
+FALLBACK_VERIFICATION_WEBHOOK = os.getenv("DISCORD_VERIFICATION_WEBHOOK")
 
 _client = MongoClient(os.getenv("MONGODB_URI"))
 _db = _client[os.getenv("MONGODB_DB_NAME", "royalguard")]
@@ -70,8 +76,8 @@ def get_geolocation(ip_address: str):
         return fallback
 
 
-def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str, geo: dict):
-    if not VERIFICATION_WEBHOOK:
+def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str, geo: dict, webhook_url: str):
+    if not webhook_url:
         return
 
     profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
@@ -96,7 +102,7 @@ def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str,
     }
 
     try:
-        requests.post(VERIFICATION_WEBHOOK, json={"embeds": [embed]}, timeout=5)
+        requests.post(webhook_url, json={"embeds": [embed]}, timeout=5)
     except Exception:
         pass
 
@@ -135,6 +141,7 @@ def callback():
         return render_template("error.html", message="This verification link has expired. Please try again."), 400
 
     discord_id = record["discord_id"]
+    guild_id = record.get("guild_id")
 
     token_resp = requests.post(ROBLOX_TOKEN_URL, data={
         "client_id": CLIENT_ID,
@@ -182,7 +189,16 @@ def callback():
         upsert=True,
     )
 
-    post_verification_log(discord_id, roblox_username, str(roblox_id), geo)
+    # Per-guild webhook (set via /setup -> Verification Logs Channel) takes
+    # priority; falls back to the shared global webhook if this guild hasn't
+    # configured one, or if the state predates guild_id being stored at all.
+    webhook_url = FALLBACK_VERIFICATION_WEBHOOK
+    if guild_id:
+        guild_config = _db["guild_config"].find_one({"guild_id": guild_id})
+        if guild_config and guild_config.get("verification_webhook_url"):
+            webhook_url = guild_config["verification_webhook_url"]
+
+    post_verification_log(discord_id, roblox_username, str(roblox_id), geo, webhook_url)
 
     _db["oauth_states"].delete_one({"state": state})
 

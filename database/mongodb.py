@@ -244,8 +244,17 @@ class Database:
         await self.set_guild_config(guild_id, **{f"{log_type}_log_channel_id": str(channel_id)})
 
     # OAUTH STATE
-    async def create_oauth_state(self, state: str, discord_id: int):
-        await self.oauth_states.insert_one({"state": state, "discord_id": str(discord_id), "created_at": time.time()})
+    # guild_id is carried through so website/routes/oauth.py's callback
+    # knows which guild's verification-logs webhook to post to - a state
+    # created before this field existed will just have guild_id=None,
+    # and the callback falls back to the global webhook env var for those.
+    async def create_oauth_state(self, state: str, discord_id: int, guild_id: int = None):
+        await self.oauth_states.insert_one({
+            "state": state,
+            "discord_id": str(discord_id),
+            "guild_id": str(guild_id) if guild_id is not None else None,
+            "created_at": time.time(),
+        })
 
     async def consume_oauth_state(self, state: str):
         doc = await self.oauth_states.find_one({"state": state})
@@ -455,9 +464,6 @@ class Database:
         await self.pending_tenants.delete_one({"_id": ObjectId(pending_id)})
 
     # GLOBAL BANS (opt-in cross-server enforcement)
-    # A guild is only ever affected if it explicitly subscribes via
-    # global_ban_subscriptions - a global ban never touches a guild that
-    # hasn't opted in.
     async def add_global_ban(self, discord_id: int, reason: str, banned_by: int, source_guild_id: int, source_guild_name: str = ""):
         doc = {
             "discord_id": str(discord_id),

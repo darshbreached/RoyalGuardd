@@ -11,15 +11,26 @@ current behavior is a separate follow-up task per cog, not included here.
 The one exception worth prioritizing: setrank.py's ROBLOX_SECURITY_COOKIE
 env var vs. this cog's "ranking.roblox_cookie" guild_config key — these are
 NOT the same thing yet until setrank.py is updated to check guild_config first.
+
+Selecting the Verification Logs Channel is special-cased: it creates (or
+replaces) a "Darsh Industries" webhook in that channel, using the company
+logo as its avatar, and stores the webhook URL so
+website/routes/oauth.py can post verification logs (IP, location, etc.)
+there per-guild instead of to one shared global webhook.
 """
 
+import os
 import discord
+import aiohttp
 from discord import app_commands
 from discord.ext import commands
 
 from database.mongodb import db
 from utils import embeds
 from utils.permissions import require_level
+
+WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
+LOGO_URL = f"{WEBSITE_BASE_URL}/static/images/logo-mark.png"
 
 
 CATEGORIES = {
@@ -112,6 +123,32 @@ def _root_embed() -> discord.Embed:
     return embed
 
 
+async def _create_verification_webhook(channel: discord.TextChannel) -> str:
+    """Creates (or replaces) a 'Darsh Industries' webhook in the given
+    channel, using the company logo as its avatar, and returns its URL.
+    Re-running /setup on this channel replaces the old webhook instead of
+    piling up duplicates."""
+    avatar_bytes = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(LOGO_URL) as resp:
+                if resp.status == 200:
+                    avatar_bytes = await resp.read()
+    except Exception:
+        pass  # fine to create the webhook without an avatar if the logo fetch fails
+
+    existing = await channel.webhooks()
+    for wh in existing:
+        if wh.name == "Darsh Industries":
+            try:
+                await wh.delete(reason="Replacing with a fresh verification logging webhook")
+            except Exception:
+                pass
+
+    webhook = await channel.create_webhook(name="Darsh Industries", avatar=avatar_bytes)
+    return webhook.url
+
+
 class BackButton(discord.ui.Button):
     """Goes back to the category list (to_root=True) or the option list within a category."""
 
@@ -143,6 +180,20 @@ class ChannelPicker(discord.ui.ChannelSelect):
         channel = self.values[0]
         await db.set_guild_config(interaction.guild.id, **{self.option_key: str(channel.id)})
         cat_key, meta = _find_option(self.option_key)
+
+        extra_note = ""
+        if self.option_key == "verification_logs_channel_id":
+            await interaction.response.defer()
+            try:
+                webhook_url = await _create_verification_webhook(channel)
+                await db.set_guild_config(interaction.guild.id, verification_webhook_url=webhook_url)
+                extra_note = "\n\nA **Darsh Industries** webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
+            except Exception as e:
+                extra_note = f"\n\n⚠️ Channel saved, but creating the logging webhook failed: {e}"
+
+            embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {channel.mention}.{extra_note}")
+            return await interaction.edit_original_response(embed=embed, view=ResultView(cat_key))
+
         embed = embeds.success_embed("Setting Saved", f"**{meta['label']}** set to {channel.mention}.")
         await interaction.response.edit_message(embed=embed, view=ResultView(cat_key))
 

@@ -17,6 +17,10 @@ Flow:
    MongoDB directly (see website/routes/oauth.py) storing the link
 5. User clicks "Update Roles" (or runs /update) to sync roles immediately
 
+The guild_id the /verify flow was started in is stored alongside the OAuth
+state, so oauth.py's callback knows which guild's "Darsh Industries"
+verification-logs webhook (set via /setup) to post to.
+
 All panel/embed titles are pulled from config/settings.py (VERIFICATION_PANEL_TITLE)
 rather than hardcoded here, so rebranding only ever requires editing settings.py.
 
@@ -118,7 +122,7 @@ class ConfirmAccountView(discord.ui.View):
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = secrets.token_urlsafe(24)
-        await db.create_oauth_state(state, interaction.user.id)
+        await db.create_oauth_state(state, interaction.user.id, interaction.guild.id)
         oauth_url = f"{WEBSITE_BASE_URL}/authorize?state={state}"
 
         embed, view = _begin_verification_embed_and_view(oauth_url)
@@ -151,7 +155,7 @@ class VerificationView(discord.ui.View):
             return await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
         state = secrets.token_urlsafe(24)
-        await db.create_oauth_state(state, interaction.user.id)
+        await db.create_oauth_state(state, interaction.user.id, interaction.guild.id)
         oauth_url = f"{WEBSITE_BASE_URL}/authorize?state={state}"
 
         embed, view = _begin_verification_embed_and_view(oauth_url)
@@ -224,7 +228,7 @@ class Verification(commands.Cog):
             return await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
         state = secrets.token_urlsafe(24)
-        await db.create_oauth_state(state, interaction.user.id)
+        await db.create_oauth_state(state, interaction.user.id, interaction.guild.id)
         oauth_url = f"{WEBSITE_BASE_URL}/authorize?state={state}"
 
         embed, view = _begin_verification_embed_and_view(oauth_url)
