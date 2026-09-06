@@ -14,6 +14,9 @@ roles - so nobody types a raw group ID or rank name by hand.
 An optional image attachment (proof) can be attached to a request - it's
 re-uploaded as a real file on the approval embed rather than relying on
 the raw attachment CDN URL, since those can expire.
+
+The requester gets DMed the moment their request is approved or denied,
+rather than having to notice it in the requests channel themselves.
 """
 
 import discord
@@ -33,6 +36,16 @@ async def _has_approver_role(interaction: discord.Interaction) -> bool:
         return False
     role = interaction.guild.get_role(int(role_id))
     return role is not None and role in interaction.user.roles
+
+
+async def _dm_requester(bot: commands.Bot, requester_id: str, embed: discord.Embed):
+    """Best-effort DM - never lets a failed DM (blocked bot, DMs closed,
+    left the server) break the approve/deny flow itself."""
+    try:
+        user = bot.get_user(int(requester_id)) or await bot.fetch_user(int(requester_id))
+        await user.send(embed=embed)
+    except Exception:
+        pass
 
 
 class RankRequestView(discord.ui.View):
@@ -141,6 +154,15 @@ class RankRequestView(discord.ui.View):
             )
         )
 
+        await _dm_requester(
+            interaction.client,
+            request["requester_id"],
+            embeds.success_embed(
+                "Rank Request Approved",
+                f"Your request for **{request['rank_name']}** in **{request['group_name']}** ({interaction.guild.name}) was approved."
+            ),
+        )
+
     async def deny(self, interaction: discord.Interaction):
         if not await _has_approver_role(interaction):
             return await interaction.response.send_message(
@@ -166,6 +188,15 @@ class RankRequestView(discord.ui.View):
                 "Rank Request Denied",
                 f"<@{request['requester_id']}>'s request for **{request['rank_name']}** in **{request['group_name']}** was denied."
             )
+        )
+
+        await _dm_requester(
+            interaction.client,
+            request["requester_id"],
+            embeds.info_embed(
+                "Rank Request Denied",
+                f"Your request for **{request['rank_name']}** in **{request['group_name']}** ({interaction.guild.name}) was denied."
+            ),
         )
 
 
@@ -281,9 +312,6 @@ class RankRequest(commands.Cog):
         view = RankRequestView(request["_id"])
 
         if proof is not None:
-            # Re-upload as a real file attached to this specific message rather
-            # than trusting the raw attachment CDN URL, which can expire -
-            # embedding via attachment:// keeps it viewable indefinitely.
             proof_file = await proof.to_file(filename="proof.png")
             embed.set_image(url="attachment://proof.png")
             await channel.send(embed=embed, view=view, file=proof_file)
