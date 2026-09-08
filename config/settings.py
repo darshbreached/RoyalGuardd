@@ -6,13 +6,13 @@ Central branding and styling configuration for the Royal Guard bot.
 
 import os
 
-BOT_NAME = "Royal Guard"
-BOT_TAG = "British Army Verification System"
-BOT_VERSION = "V2"
+BOT_NAME = "Royal Guard Services ©"
+BOT_TAG = "Canadian Army Verification System"
+BOT_VERSION = "All Rights Reserved."
 
 BOT_ICON_URL = os.getenv(
     "BOT_ICON_URL",
-    "https://i.imgur.com/ILUPJLN.png"  # Replace with a Canadian Army-themed crest
+    "https://i.imgur.com/ILUPJLN.png"
 )
 
 EMBED_COLOR = 0x87CEEB
@@ -21,13 +21,13 @@ ERROR_COLOR = 0x800000
 WARNING_COLOR = 0xFFD700
 INFO_COLOR = 0x3498DB
 
-FOOTER_TEXT = "Made by Darsh © All Rights Reserved"
+FOOTER_TEXT = f"{BOT_NAME} {BOT_VERSION}"
 FOOTER_ICON = BOT_ICON_URL
 
 AUTHOR_TEXT = BOT_NAME
 AUTHOR_ICON = BOT_ICON_URL
 
-VERIFICATION_PANEL_TITLE = "BRITISH ARMY VERIFICATION SYSTEM V2"
+VERIFICATION_PANEL_TITLE = "CANADIAN ARMY VERIFICATION SYSTEM V2"
 VERIFICATION_PANEL_DESCRIPTION = (
     "Press the **Verify / Reverify** button to verify or reverify your ROBLOX account."
 )
