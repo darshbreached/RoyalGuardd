@@ -1,7 +1,8 @@
 """
 cogs/panels.py
 ---------------
-/panel verification  - posts the persistent verification panel
+/panel verification  - posts the persistent verification panel, branded
+                       per-guild (Army Name / Crest via /setup -> Branding)
 /panel tickets        - posts the REPORT TICKETS / OTHER TICKETS panels,
                         each with a single "Create Ticket" button
 """
@@ -38,7 +39,7 @@ class Panels(commands.Cog):
 
     @require_level(10)
     async def panel_verification(self, interaction: discord.Interaction):
-        embed = embeds.verification_panel_embed()
+        embed = await embeds.verification_panel_embed(interaction.guild.id)
         await interaction.channel.send(embed=embed, view=VerificationView())
         await interaction.response.send_message(
             embed=embeds.success_embed("Panel Posted", "Verification panel has been posted."), ephemeral=True

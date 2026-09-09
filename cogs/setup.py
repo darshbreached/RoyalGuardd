@@ -18,6 +18,12 @@ logo as its avatar, and stores the webhook URL so
 website/routes/oauth.py can post verification logs (IP, location, etc.)
 there per-guild instead of to one shared global webhook.
 
+The Branding category (army_name / crest_url) is read by
+utils.embeds.verification_panel_embed() to theme each guild's verification
+panel independently - so one server can be "Canadian Army" with its own
+crest while another server is themed completely differently, without
+touching any code.
+
 NOTE: discord.ui.ChannelSelect's selected value is a lightweight
 AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
 .create_webhook(). It must be resolved via interaction.guild.get_channel()
@@ -104,6 +110,21 @@ CATEGORIES = {
             "bmt_graduate_rank_id": {"label": "BMT Graduate Rank", "description": "Rank ID BMT graduates are promoted to", "type": "number"},
         },
     },
+    "economy": {
+        "label": "Economy",
+        "description": "Configure the server's economy currency",
+        "options": {
+            "currency_name": {"label": "Currency Name", "description": "e.g. Credits, Coins, Dollars", "type": "text"},
+        },
+    },
+    "branding": {
+        "label": "Branding",
+        "description": "Configure this server's army theme",
+        "options": {
+            "army_name": {"label": "Army Name", "description": "e.g. Canadian Army, Australian Army", "type": "text"},
+            "crest_url": {"label": "Crest Image URL", "description": "Direct image link to this server's crest", "type": "url"},
+        },
+    },
 }
 
 
@@ -142,7 +163,7 @@ async def _create_verification_webhook(channel: discord.TextChannel) -> str:
                 if resp.status == 200:
                     avatar_bytes = await resp.read()
     except Exception:
-        pass  # fine to create the webhook without an avatar if the logo fetch fails
+        pass
 
     existing = await channel.webhooks()
     for wh in existing:
@@ -191,8 +212,6 @@ class ChannelPicker(discord.ui.ChannelSelect):
         if self.option_key == "verification_logs_channel_id":
             await interaction.response.defer()
 
-            # Resolve the real TextChannel - selected here is only a
-            # lightweight AppCommandChannel stub with no webhook methods.
             real_channel = interaction.guild.get_channel(selected.id)
             if real_channel is None:
                 try:
@@ -251,6 +270,10 @@ class SettingModal(discord.ui.Modal):
             max_len = 400
         elif meta["type"] == "secret":
             max_len = 2000  # Roblox .ROBLOSECURITY cookies typically run 800+ chars - 200 was truncating them silently
+        elif meta["type"] == "text":
+            max_len = 32  # currency names, army names etc - short by nature
+        elif meta["type"] == "url":
+            max_len = 300
         else:
             max_len = 200
         self.value_input = discord.ui.TextInput(
@@ -268,6 +291,12 @@ class SettingModal(discord.ui.Modal):
         if self.meta["type"] == "number" and not raw.isdigit():
             return await interaction.response.send_message(
                 embed=embeds.error_embed("Invalid Value", f"**{self.meta['label']}** must be a number."),
+                ephemeral=True,
+            )
+
+        if self.meta["type"] == "url" and not (raw.startswith("http://") or raw.startswith("https://")):
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("Invalid Value", f"**{self.meta['label']}** must be a direct image URL starting with http:// or https://."),
                 ephemeral=True,
             )
 
