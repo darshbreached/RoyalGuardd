@@ -55,6 +55,7 @@ COGS = [
     "cogs.warnings",
     "cogs.ssu",
     "cogs.devtools"
+    "cogs.globalban"
 ]
 
 
