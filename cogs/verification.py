@@ -1,47 +1,74 @@
 """
 cogs/verification.py
 ---------------------
-Roblox OAuth2 verification system. The panel posted by /panel verification
-uses a persistent View so buttons keep working after bot restarts.
+Roblox OAuth2 verification system.
 
-Flow:
-1. User clicks "Verify via ROBLOX Login"
-2. If they're already verified in the database, they're shown a
-   confirmation ("Is this your ROBLOX account?") with Yes/No buttons
-   instead of immediately being sent a new link.
-   - Yes -> shown "You are already verified" with an Update Roles button
-   - No  -> sent a fresh verification link to reverify with a different account
-3. If they're not verified yet, they're sent a "Begin Verification" link
-   button that opens the OAuth flow in their browser
-4. Website handles the Roblox OAuth2 code exchange and calls back into
-   MongoDB directly (see website/routes/oauth.py) storing the link
-5. User clicks "Update Roles" (or runs /update) to sync roles immediately
+/forceverify lets staff manually link a Discord user to a Roblox account,
+bypassing the OAuth flow entirely - for cases where a member's browser/
+network can't complete verification normally. Gated at admin level 50.
+Logged to the same per-guild verification webhook as normal verifications,
+clearly flagged as a manual override.
 
-The guild_id the /verify flow was started in is stored alongside the OAuth
-state, so oauth.py's callback knows which guild's "Darsh Industries"
-verification-logs webhook (set via /setup) to post to.
-
-All panel/embed titles are pulled from config/settings.py (VERIFICATION_PANEL_TITLE)
-rather than hardcoded here, so rebranding only ever requires editing settings.py.
-
-All responses in this cog are ephemeral - note that deferring with
-ephemeral=True does NOT make a later followup.send() ephemeral automatically;
-every followup call below explicitly passes ephemeral=True as well.
+Every "sync roles" action (the Update Roles buttons and /forceverify) also
+assigns a timezone role based on the country/region captured during
+verification - see utils/timezones.py for the country->label mapping and
+its accuracy limitations. Assignment is by exact role NAME match
+(e.g. a role literally named "EST"), same convention as verified_roles/
+extra_roles - if the guild hasn't created that role, it's silently skipped.
 """
 
 import os
-import secrets
 import discord
 from discord import app_commands
 from discord.ext import commands
+import secrets
 
 from database.mongodb import db
 from utils import embeds
+from utils.permissions import require_level
+from utils import roblox
+from utils.timezones import get_timezone_label, all_timezone_labels
 from cogs.update import sync_member_roles
 from utils.roblox import RobloxAPIError
 from config import settings
 
 WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
+
+_ALL_TZ_LABELS = all_timezone_labels()
+
+
+async def _apply_timezone_role(guild: discord.Guild, member: discord.Member, verification: dict) -> str:
+    """Adds the matching timezone role by name and removes any other
+    timezone-label role the member currently holds. Returns the label that
+    was applied, or None if no country data / no matching role exists."""
+    country_code = verification.get("verification_country_code")
+    region = verification.get("verification_region")
+    label = get_timezone_label(country_code, region)
+
+    # Strip any other timezone-label role first, regardless of whether a
+    # new one will be applied - handles someone re-verifying from a
+    # different country.
+    to_remove = [r for r in member.roles if r.name in _ALL_TZ_LABELS and r.name != label]
+    if to_remove:
+        try:
+            await member.remove_roles(*to_remove, reason="Timezone role changed on re-verification")
+        except Exception:
+            pass
+
+    if not label:
+        return None
+
+    target_role = discord.utils.get(guild.roles, name=label)
+    if not target_role:
+        return None  # guild hasn't created this timezone role - skip silently
+
+    if target_role not in member.roles:
+        try:
+            await member.add_roles(target_role, reason="Timezone role from verification country/region")
+        except Exception:
+            return None
+
+    return label
 
 
 def _begin_verification_embed_and_view(oauth_url: str) -> tuple[discord.Embed, discord.ui.View]:
@@ -63,10 +90,31 @@ def _begin_verification_embed_and_view(oauth_url: str) -> tuple[discord.Embed, d
     return embed, view
 
 
-class AlreadyVerifiedUpdateView(discord.ui.View):
-    """Shown after the user confirms 'Yes, this is my account' - just the
-    Update Roles button, matching the reference image."""
+async def _post_force_verify_log(guild: discord.Guild, target: discord.Member, roblox_id: str, roblox_username: str, staff: discord.Member):
+    import requests
 
+    guild_config = await db.get_guild_config(guild.id)
+    webhook_url = guild_config.get("verification_webhook_url") or os.getenv("DISCORD_VERIFICATION_WEBHOOK")
+    if not webhook_url:
+        return
+
+    profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+    description = (
+        f"Discord: {target.mention} | `{target.id}`\n"
+        f"ROBLOX: {roblox_username} | {profile_url}\n"
+        f"Method: **Manual Override (/forceverify)**\n\n"
+        f"⚠️ Manually verified by {staff.mention} (`{staff.id}`) — bypassed OAuth, no IP/account-age checks were run."
+    )
+
+    embed = {"title": "Verification Logs", "description": description, "color": 0x9B59B6}
+
+    try:
+        requests.post(webhook_url, json={"embeds": [embed]}, timeout=5)
+    except Exception:
+        pass
+
+
+class AlreadyVerifiedUpdateView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=180)
 
@@ -92,19 +140,20 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
                 ephemeral=True,
             )
 
+        tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
+
         desc = "Your roles are now up to date."
         if added:
             desc += f"\n**Added:** {', '.join(added)}"
         if removed:
             desc += f"\n**Removed:** {', '.join(removed)}"
+        if tz_label:
+            desc += f"\n**Timezone:** {tz_label}"
 
         await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
 
 
 class ConfirmAccountView(discord.ui.View):
-    """Shown when the user is already verified - asks them to confirm the
-    linked Roblox account is still correct before offering Update Roles."""
-
     def __init__(self, roblox_username: str, roblox_id: str):
         super().__init__(timeout=180)
         self.roblox_username = roblox_username
@@ -130,8 +179,6 @@ class ConfirmAccountView(discord.ui.View):
 
 
 class VerificationView(discord.ui.View):
-    """Persistent view - registered once in main.py with view=VerificationView(), timeout=None."""
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -197,11 +244,15 @@ class VerificationView(discord.ui.View):
                 ephemeral=True,
             )
 
+        tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
+
         desc = "Your roles are now up to date."
         if added:
             desc += f"\n**Added:** {', '.join(added)}"
         if removed:
             desc += f"\n**Removed:** {', '.join(removed)}"
+        if tz_label:
+            desc += f"\n**Timezone:** {tz_label}"
 
         await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
 
@@ -233,6 +284,60 @@ class Verification(commands.Cog):
 
         embed, view = _begin_verification_embed_and_view(oauth_url)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="forceverify", description="Manually link a member to a Roblox account, bypassing OAuth.")
+    @app_commands.describe(
+        user="The Discord member to verify",
+        roblox_username_or_id="Their Roblox username or numeric user ID",
+        sync_roles="Immediately sync their roles after linking (default: yes)",
+    )
+    @require_level(50)
+    async def forceverify(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        roblox_username_or_id: str,
+        sync_roles: bool = True,
+    ):
+        await interaction.response.defer()
+
+        roblox_username_or_id = roblox_username_or_id.strip()
+
+        if roblox_username_or_id.isdigit():
+            roblox_user = await roblox.get_user_by_id(int(roblox_username_or_id))
+        else:
+            roblox_user = await roblox.get_user_by_username(roblox_username_or_id)
+
+        if not roblox_user:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Roblox User Not Found", f"Could not find a Roblox account matching `{roblox_username_or_id}`.")
+            )
+
+        roblox_id = roblox_user.get("id")
+        roblox_username = roblox_user.get("name")
+
+        await db.set_verification(user.id, roblox_id, roblox_username)
+
+        await _post_force_verify_log(interaction.guild, user, str(roblox_id), roblox_username, interaction.user)
+
+        result_desc = f"{user.mention} has been manually linked to **{roblox_username}** (`{roblox_id}`)."
+
+        if sync_roles:
+            try:
+                added, removed, _ = await sync_member_roles(interaction.guild, user, roblox_id)
+                if added:
+                    result_desc += f"\n**Added:** {', '.join(added)}"
+                if removed:
+                    result_desc += f"\n**Removed:** {', '.join(removed)}"
+            except RobloxAPIError:
+                result_desc += "\n\n⚠️ Linked successfully, but role sync failed (Roblox API temporarily unavailable). Run /update on them later."
+
+            # Note: forceverify bypasses OAuth entirely, so there's no
+            # verification_country_code stored for this user - the
+            # timezone role can't be applied here since we have no
+            # location data at all for a manually-linked account.
+
+        await interaction.followup.send(embed=embeds.success_embed("Force Verified", result_desc))
 
 
 async def setup(bot: commands.Bot):
