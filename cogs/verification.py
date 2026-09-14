@@ -212,7 +212,7 @@ class VerificationView(discord.ui.View):
                         custom_id="royalguard:verify_game", row=1)
     async def verify_game(self, interaction: discord.Interaction, button: discord.ui.Button):
         code = secrets.token_hex(3).upper()
-        await db.create_oauth_state(f"gamecode:{code}", interaction.user.id)
+        await db.create_oauth_state(f"gamecode:{code}", interaction.user.id, interaction.guild.id)
 
         embed = embeds.info_embed(
             "Verify via ROBLOX Game",
