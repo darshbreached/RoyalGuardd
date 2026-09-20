@@ -54,8 +54,9 @@ COGS = [
     "cogs.acceptrequest",
     "cogs.warnings",
     "cogs.ssu",
-    "cogs.devtools"
-    "cogs.globalban"
+    "cogs.devtools",
+    "cogs.globalban",
+    "cogs.economy",
 ]
 
 
