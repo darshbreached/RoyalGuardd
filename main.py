@@ -98,9 +98,6 @@ class RoyalGuardBot(commands.Bot):
     async def on_ready(self):
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
         log.info(f"Currently in {len(self.guilds)} server(s).")
-        await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="the Royal Guard")
-        )
 
 
 async def main():
