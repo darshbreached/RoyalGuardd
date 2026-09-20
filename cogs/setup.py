@@ -13,16 +13,11 @@ env var vs. this cog's "ranking.roblox_cookie" guild_config key — these are
 NOT the same thing yet until setrank.py is updated to check guild_config first.
 
 Selecting the Verification Logs Channel is special-cased: it creates (or
-replaces) a "Darsh Industries" webhook in that channel, using the company
-logo as its avatar, and stores the webhook URL so
+replaces) a webhook in that channel, named and avatared from
+config/settings.py's BOT_NAME/BOT_ICON_URL (generic bot branding, not tied
+to any specific company), and stores the webhook URL so
 website/routes/oauth.py can post verification logs (IP, location, etc.)
 there per-guild instead of to one shared global webhook.
-
-The Branding category (army_name / crest_url) is read by
-utils.embeds.verification_panel_embed() to theme each guild's verification
-panel independently - so one server can be "Canadian Army" with its own
-crest while another server is themed completely differently, without
-touching any code.
 
 NOTE: discord.ui.ChannelSelect's selected value is a lightweight
 AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
@@ -31,7 +26,6 @@ AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
 webhook operation.
 """
 
-import os
 import discord
 import aiohttp
 from discord import app_commands
@@ -40,9 +34,7 @@ from discord.ext import commands
 from database.mongodb import db
 from utils import embeds
 from utils.permissions import require_level
-
-WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
-LOGO_URL = f"{WEBSITE_BASE_URL}/static/images/logo-mark.png"
+from config import settings
 
 
 CATEGORIES = {
@@ -151,15 +143,18 @@ def _root_embed() -> discord.Embed:
 
 
 async def _create_verification_webhook(channel: discord.TextChannel) -> str:
-    """Creates (or replaces) a 'Darsh Industries' webhook in the given
-    channel, using the company logo as its avatar, and returns its URL.
-    Re-running /setup on this channel replaces the old webhook instead of
-    piling up duplicates. `channel` must be a real TextChannel object
-    (resolved from cache/fetch), not a ChannelSelect AppCommandChannel stub."""
+    """Creates (or replaces) a verification-logs webhook in the given
+    channel, named and avatared from settings.BOT_NAME/BOT_ICON_URL, and
+    returns its URL. Re-running /setup on this channel replaces the old
+    webhook instead of piling up duplicates. `channel` must be a real
+    TextChannel object (resolved from cache/fetch), not a ChannelSelect
+    AppCommandChannel stub."""
+    webhook_name = f"{settings.BOT_NAME} Verification Logs"[:80]
+
     avatar_bytes = None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(LOGO_URL) as resp:
+            async with session.get(settings.BOT_ICON_URL) as resp:
                 if resp.status == 200:
                     avatar_bytes = await resp.read()
     except Exception:
@@ -167,13 +162,13 @@ async def _create_verification_webhook(channel: discord.TextChannel) -> str:
 
     existing = await channel.webhooks()
     for wh in existing:
-        if wh.name == "Darsh Industries":
+        if wh.name == webhook_name:
             try:
                 await wh.delete(reason="Replacing with a fresh verification logging webhook")
             except Exception:
                 pass
 
-    webhook = await channel.create_webhook(name="Darsh Industries", avatar=avatar_bytes)
+    webhook = await channel.create_webhook(name=webhook_name, avatar=avatar_bytes)
     return webhook.url
 
 
@@ -225,7 +220,7 @@ class ChannelPicker(discord.ui.ChannelSelect):
                 try:
                     webhook_url = await _create_verification_webhook(real_channel)
                     await db.set_guild_config(interaction.guild.id, verification_webhook_url=webhook_url)
-                    extra_note = "\n\nA **Darsh Industries** webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
+                    extra_note = "\n\nA verification-logs webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
                 except Exception as e:
                     extra_note = f"\n\n⚠️ Channel saved, but creating the logging webhook failed: {e}"
 
