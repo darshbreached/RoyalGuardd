@@ -15,10 +15,15 @@ instead of stacking roles.
 Private channels are created under guild_config's
 "booster_channel_category_id" if set (via /setup -> Channels -> Booster
 Colour-Select Category), otherwise at the top level of the server.
+
+/testboosterflow - owner-only. Runs the exact same channel-creation and
+colour-picker flow as a real boost, without needing an actual Nitro boost
+to trigger it. Useful for testing on an account with no Nitro.
 """
 
 import asyncio
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from database.mongodb import db
@@ -120,7 +125,7 @@ class BoosterRoles(commands.Cog):
 
         role_names = _get_colour_role_names(guild_config)
         if not role_names:
-            return  # no colour roles configured for this server - nothing to offer
+            return None  # no colour roles configured for this server - nothing to offer
 
         category = None
         category_id = guild_config.get("booster_channel_category_id")
@@ -141,7 +146,7 @@ class BoosterRoles(commands.Cog):
                 reason="Booster colour role selection",
             )
         except discord.Forbidden:
-            return  # bot lacks Manage Channels - silently skip rather than error into nowhere
+            return None  # bot lacks Manage Channels - silently skip rather than error into nowhere
 
         bullet_list = "\n".join(f"• {n and discord.utils.get(guild.roles, name=n).mention if discord.utils.get(guild.roles, name=n) else n}" for n in role_names)
 
@@ -154,6 +159,32 @@ class BoosterRoles(commands.Cog):
         view = ColourSelectView(guild, role_names, member)
         message = await channel.send(embed=embed, view=view)
         view.channel = channel
+        return channel
+
+    @app_commands.command(name="testboosterflow", description="Owner-only: test the booster colour-select flow without a real boost.")
+    async def testboosterflow(self, interaction: discord.Interaction):
+        is_owner = await interaction.client.is_owner(interaction.user)
+        if not is_owner:
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("Not Allowed", "This test command is restricted to the bot owner."),
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = await self._start_colour_selection(interaction.user)
+
+        if channel is None:
+            return await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Nothing To Test",
+                    "Either no colour_roles are configured for this server (/setup -> Roles -> Colour Roles), or the bot lacks Manage Channels permission."
+                ),
+            )
+
+        await interaction.followup.send(
+            embed=embeds.success_embed("Test Started", f"Created {channel.mention} - go check it out.")
+        )
 
 
 async def setup(bot: commands.Bot):
