@@ -18,6 +18,14 @@ config/settings.py's BOT_NAME/BOT_ICON_URL, and stores the webhook URL so
 website/routes/oauth.py can post verification logs there per-guild instead
 of to one shared global webhook.
 
+Saving the Colour Roles list is ALSO special-cased: any role name in the
+list that doesn't already exist in the server gets auto-created, with a
+colour guessed from the name (keyword match for common colour words, a
+curated fallback palette for whimsical names like "Bee" or "Holographic"
+that aren't literal colours). Existing roles with matching names are left
+untouched - their colour/position isn't modified, only missing ones are
+created. Used by cogs/boosterroles.py's colour-picker flow.
+
 NOTE: discord.ui.ChannelSelect's selected value is a lightweight
 AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
 .create_webhook(). It must be resolved via interaction.guild.get_channel()
@@ -63,7 +71,7 @@ CATEGORIES = {
             "awards_role_id": {"label": "Awards Role", "description": "Role for awards", "type": "role"},
             "timezone_role_id": {"label": "Timezone Role", "description": "Role for timezone", "type": "role"},
             "level_role_id": {"label": "Level Role", "description": "Role for levels", "type": "role"},
-            "colour_roles": {"label": "Colour Roles", "description": "Comma-separated role names - these are what boosters pick from", "type": "list"},
+            "colour_roles": {"label": "Colour Roles", "description": "Comma-separated role names - auto-created if missing, these are what boosters pick from", "type": "list"},
         },
     },
     "verification": {
@@ -120,6 +128,62 @@ CATEGORIES = {
 }
 
 
+# Keyword -> hex colour, checked as a substring match against the (lowercased)
+# role name. Order matters slightly for overlapping words but these are
+# distinct enough not to collide in practice.
+COLOUR_KEYWORDS = {
+    "red": 0xE74C3C, "scarlet": 0xB22222, "crimson": 0xDC143C, "rose": 0xFF007F,
+    "pink": 0xFF69B4, "bubblegum": 0xFF6FCF, "magenta": 0xFF00FF, "fuchsia": 0xFF00BF,
+    "purple": 0x9B59B6, "violet": 0x8A2BE2, "lavender": 0xB57EDC, "indigo": 0x4B0082,
+    "blue": 0x3498DB, "azure": 0x007FFF, "navy": 0x000080, "sky": 0x87CEEB,
+    "cyan": 0x00CED1, "turquoise": 0x40E0D0, "teal": 0x1ABC9C, "electric": 0x00BFFF,
+    "green": 0x2ECC71, "lime": 0x32CD32, "emerald": 0x50C878, "mint": 0x98FF98,
+    "pine": 0x01796F, "forest": 0x228B22, "olive": 0x808000,
+    "yellow": 0xF1C40F, "gold": 0xFFD700, "amber": 0xFFBF00, "bee": 0xF4D03F,
+    "orange": 0xFFA500, "mango": 0xFFB347, "peach": 0xFFCBA4, "coral": 0xFF7F50,
+    "brown": 0x8B4513, "tan": 0xD2B48C, "taffy": 0xFF77FF,
+    "black": 0x2C2F33, "white": 0xF2F3F5, "grey": 0x95A5A6, "gray": 0x95A5A6, "silver": 0xC0C0C0,
+}
+
+# Fallback palette for names with no keyword match at all (whimsical names
+# like "Holographic") - a fixed, diverse set so results are at least
+# consistent and visually distinct across runs.
+FALLBACK_PALETTE = [0xE0BBE4, 0x957DAD, 0xD291BC, 0xFEC8D8, 0xFFDFD3, 0xB5EAD7, 0xC7CEEA, 0xFFD8B1]
+
+
+def _guess_colour(role_name: str, fallback_index: int) -> int:
+    lower = role_name.lower()
+    for keyword, hex_value in COLOUR_KEYWORDS.items():
+        if keyword in lower:
+            return hex_value
+    return FALLBACK_PALETTE[fallback_index % len(FALLBACK_PALETTE)]
+
+
+async def _auto_create_colour_roles(guild: discord.Guild, role_names: list):
+    """Creates any role in role_names that doesn't already exist (matched
+    by exact name), with a guessed colour. Leaves existing roles with
+    matching names completely untouched. Returns (created_names, failed_names)."""
+    created = []
+    failed = []
+    for i, name in enumerate(role_names):
+        existing = discord.utils.get(guild.roles, name=name)
+        if existing is not None:
+            continue
+        try:
+            colour_value = _guess_colour(name, i)
+            await guild.create_role(
+                name=name,
+                colour=discord.Colour(colour_value),
+                reason="Auto-created colour role from /setup Colour Roles list",
+            )
+            created.append(name)
+        except discord.Forbidden:
+            failed.append(name)
+        except Exception:
+            failed.append(name)
+    return created, failed
+
+
 def _find_option(option_key: str):
     for cat_key, cat in CATEGORIES.items():
         if option_key in cat["options"]:
@@ -143,9 +207,6 @@ def _root_embed() -> discord.Embed:
 
 
 async def _create_verification_webhook(channel: discord.TextChannel) -> str:
-    """Creates (or replaces) a verification-logs webhook in the given
-    channel, named and avatared from settings.BOT_NAME/BOT_ICON_URL, and
-    returns its URL."""
     webhook_name = f"{settings.BOT_NAME} Verification Logs"[:80]
 
     avatar_bytes = None
@@ -296,9 +357,26 @@ class SettingModal(discord.ui.Modal):
             )
 
         await db.set_guild_config(interaction.guild.id, **{self.option_key: raw})
+        cat_key, _ = _find_option(self.option_key)
+
+        if self.option_key == "colour_roles":
+            await interaction.response.defer()
+
+            role_names = [n.strip() for n in raw.split(",") if n.strip()]
+            created, failed = await _auto_create_colour_roles(interaction.guild, role_names)
+
+            extra_note = ""
+            if created:
+                extra_note += f"\n\n✅ Created {len(created)} new role(s): {', '.join(created)}"
+            if failed:
+                extra_note += f"\n\n⚠️ Failed to create: {', '.join(failed)} (check the bot has Manage Roles permission and is positioned above where new roles land)"
+            if not created and not failed:
+                extra_note = "\n\nAll of those roles already existed - nothing new created."
+
+            embed = embeds.success_embed("Setting Saved", f"**{self.meta['label']}** set to `{raw}`.{extra_note}")
+            return await interaction.edit_original_response(embed=embed, view=ResultView(cat_key))
 
         display_value = f"||`{raw}`||" if self.meta["type"] == "secret" else f"`{raw}`"
-        cat_key, _ = _find_option(self.option_key)
         embed = embeds.success_embed("Setting Saved", f"**{self.meta['label']}** set to {display_value}.")
         await interaction.response.edit_message(embed=embed, view=ResultView(cat_key))
 
