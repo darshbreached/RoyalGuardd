@@ -14,10 +14,9 @@ NOT the same thing yet until setrank.py is updated to check guild_config first.
 
 Selecting the Verification Logs Channel is special-cased: it creates (or
 replaces) a webhook in that channel, named and avatared from
-config/settings.py's BOT_NAME/BOT_ICON_URL (generic bot branding, not tied
-to any specific company), and stores the webhook URL so
-website/routes/oauth.py can post verification logs (IP, location, etc.)
-there per-guild instead of to one shared global webhook.
+config/settings.py's BOT_NAME/BOT_ICON_URL, and stores the webhook URL so
+website/routes/oauth.py can post verification logs there per-guild instead
+of to one shared global webhook.
 
 NOTE: discord.ui.ChannelSelect's selected value is a lightweight
 AppCommandChannel stub, not a full TextChannel - it has no .webhooks() or
@@ -47,6 +46,7 @@ CATEGORIES = {
             "verification_logs_channel_id": {"label": "Verification Logs Channel", "description": "Set the channel for verification logs", "type": "channel"},
             "ssu_channel_id": {"label": "SSU Channel", "description": "Server Startup channel", "type": "channel"},
             "bmt_logs_channel_id": {"label": "BMT Logs Channel", "description": "Channel for BMT before/after training logs", "type": "channel"},
+            "booster_channel_category_id": {"label": "Booster Colour-Select Category", "description": "Category where private booster colour-select channels get created", "type": "channel", "channel_type": "category"},
         },
     },
     "roles": {
@@ -63,7 +63,7 @@ CATEGORIES = {
             "awards_role_id": {"label": "Awards Role", "description": "Role for awards", "type": "role"},
             "timezone_role_id": {"label": "Timezone Role", "description": "Role for timezone", "type": "role"},
             "level_role_id": {"label": "Level Role", "description": "Role for levels", "type": "role"},
-            "colour_roles": {"label": "Colour Roles", "description": "Comma-separated role names", "type": "list"},
+            "colour_roles": {"label": "Colour Roles", "description": "Comma-separated role names - these are what boosters pick from", "type": "list"},
         },
     },
     "verification": {
@@ -145,10 +145,7 @@ def _root_embed() -> discord.Embed:
 async def _create_verification_webhook(channel: discord.TextChannel) -> str:
     """Creates (or replaces) a verification-logs webhook in the given
     channel, named and avatared from settings.BOT_NAME/BOT_ICON_URL, and
-    returns its URL. Re-running /setup on this channel replaces the old
-    webhook instead of piling up duplicates. `channel` must be a real
-    TextChannel object (resolved from cache/fetch), not a ChannelSelect
-    AppCommandChannel stub."""
+    returns its URL."""
     webhook_name = f"{settings.BOT_NAME} Verification Logs"[:80]
 
     avatar_bytes = None
@@ -173,8 +170,6 @@ async def _create_verification_webhook(channel: discord.TextChannel) -> str:
 
 
 class BackButton(discord.ui.Button):
-    """Goes back to the category list (to_root=True) or the option list within a category."""
-
     def __init__(self, category_key: str, to_root: bool = False):
         super().__init__(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️")
         self.category_key = category_key
@@ -187,16 +182,21 @@ class BackButton(discord.ui.Button):
 
 
 class ResultView(discord.ui.View):
-    """Shown after a setting is saved — Back button returns to that category's option list."""
-
     def __init__(self, category_key: str):
         super().__init__(timeout=180)
         self.add_item(BackButton(category_key))
 
 
+CHANNEL_TYPE_MAP = {
+    "text": discord.ChannelType.text,
+    "category": discord.ChannelType.category,
+}
+
+
 class ChannelPicker(discord.ui.ChannelSelect):
-    def __init__(self, option_key: str, label: str):
-        super().__init__(placeholder=f"Select {label}...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1)
+    def __init__(self, option_key: str, label: str, channel_type: str = "text"):
+        discord_channel_type = CHANNEL_TYPE_MAP.get(channel_type, discord.ChannelType.text)
+        super().__init__(placeholder=f"Select {label}...", channel_types=[discord_channel_type], min_values=1, max_values=1)
         self.option_key = option_key
 
     async def callback(self, interaction: discord.Interaction):
@@ -220,7 +220,7 @@ class ChannelPicker(discord.ui.ChannelSelect):
                 try:
                     webhook_url = await _create_verification_webhook(real_channel)
                     await db.set_guild_config(interaction.guild.id, verification_webhook_url=webhook_url)
-                    extra_note = "\n\nA verification-logs webhook was created in that channel — verification logs (IP, location, ISP, etc.) will post there automatically from now on."
+                    extra_note = "\n\nA verification-logs webhook was created in that channel — verification logs will post there automatically from now on."
                 except Exception as e:
                     extra_note = f"\n\n⚠️ Channel saved, but creating the logging webhook failed: {e}"
 
@@ -248,7 +248,7 @@ class PickerView(discord.ui.View):
     def __init__(self, option_key: str, meta: dict, picker_type: str):
         super().__init__(timeout=180)
         if picker_type == "channel":
-            self.add_item(ChannelPicker(option_key, meta["label"]))
+            self.add_item(ChannelPicker(option_key, meta["label"], meta.get("channel_type", "text")))
         else:
             self.add_item(RolePicker(option_key, meta["label"]))
         cat_key, _ = _find_option(option_key)
@@ -264,9 +264,9 @@ class SettingModal(discord.ui.Modal):
         if meta["type"] == "list":
             max_len = 400
         elif meta["type"] == "secret":
-            max_len = 2000  # Roblox .ROBLOSECURITY cookies typically run 800+ chars - 200 was truncating them silently
+            max_len = 2000
         elif meta["type"] == "text":
-            max_len = 32  # currency names, army names etc - short by nature
+            max_len = 32
         elif meta["type"] == "url":
             max_len = 300
         else:

@@ -57,6 +57,7 @@ COGS = [
     "cogs.devtools",
     "cogs.globalban",
     "cogs.economy",
+    "cogs.boosterroles"
 ]
 
 
