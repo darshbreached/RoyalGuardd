@@ -2,8 +2,15 @@
 cogs/moderation.py
 -------------------
 Ban, kick, mute (Discord timeout), and unban commands. Every action posts
-a confirmation embed and, if a log channel has been configured for "mod"
-via /setlogchannel, mirrors that same embed there.
+a confirmation embed publicly in the channel the command was used in, and
+mirrors it to the configured "mod" log channel if one's been set via
+/setlogchannel.
+
+Deferred non-ephemeral on purpose: once an interaction is deferred with
+ephemeral=True, Discord forces EVERY followup on that interaction to be
+ephemeral too, regardless of what you pass to followup.send() afterward -
+there's no way to override that per-followup. So these defer public, and
+error paths explicitly pass ephemeral=True on their own followup instead.
 
 /ban and /mute also DM the target a notice BEFORE the action executes -
 DMing after a ban fails silently since Discord blocks DMs once you no
@@ -95,9 +102,8 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="The user to ban", reason="Reason for the ban", evidence="Optional link to evidence (screenshot, clip, etc.)")
     @require_level(50)
     async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided", evidence: str = None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
-        # DM before the ban - Discord blocks DMs once the user no longer shares a server with the bot.
         await _send_action_dm(
             user, "Ban Notice", interaction.guild.name, reason, evidence=evidence, include_appeal=True
         )
@@ -106,7 +112,7 @@ class Moderation(commands.Cog):
             await user.ban(reason=f"{reason} | By {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "I don't have permission to ban this user.")
+                embed=embeds.error_embed("Failed", "I don't have permission to ban this user."), ephemeral=True
             )
 
         embed = embeds.success_embed("User Banned", f"Successfully banned user {user.mention} with reason: {reason}")
@@ -117,12 +123,12 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="The user to kick", reason="Reason for the kick")
     @require_level(20)
     async def kick(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             await user.kick(reason=f"{reason} | By {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "I don't have permission to kick this user.")
+                embed=embeds.error_embed("Failed", "I don't have permission to kick this user."), ephemeral=True
             )
 
         embed = embeds.success_embed("User Kicked", f"Successfully kicked user {user.mention} with reason: {reason}")
@@ -133,7 +139,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="The user to mute", minutes="Duration in minutes", reason="Reason for the mute", evidence="Optional link to evidence (screenshot, clip, etc.)")
     @require_level(20)
     async def mute(self, interaction: discord.Interaction, user: discord.Member, minutes: int, reason: str = "No reason provided", evidence: str = None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         await _send_action_dm(
             user, "Mute Notice", interaction.guild.name, reason, evidence=evidence,
@@ -144,7 +150,7 @@ class Moderation(commands.Cog):
             await user.timeout(timedelta(minutes=minutes), reason=f"{reason} | By {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "I don't have permission to mute this user.")
+                embed=embeds.error_embed("Failed", "I don't have permission to mute this user."), ephemeral=True
             )
 
         embed = embeds.success_embed(
@@ -157,12 +163,12 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="The user to unmute")
     @require_level(20)
     async def unmute(self, interaction: discord.Interaction, user: discord.Member):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             await user.timeout(None, reason=f"Unmuted by {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "I don't have permission to unmute this user.")
+                embed=embeds.error_embed("Failed", "I don't have permission to unmute this user."), ephemeral=True
             )
 
         embed = embeds.success_embed("User Unmuted", f"Successfully unmuted {user.mention}.")
@@ -173,17 +179,17 @@ class Moderation(commands.Cog):
     @app_commands.describe(user_id="The Discord user ID to unban", reason="Reason for the unban")
     @require_level(50)
     async def unban(self, interaction: discord.Interaction, user_id: str, reason: str = "No reason provided"):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             user_obj = discord.Object(id=int(user_id))
             await interaction.guild.unban(user_obj, reason=f"{reason} | By {interaction.user}")
         except (discord.NotFound, ValueError):
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "That user is not banned, or the ID is invalid.")
+                embed=embeds.error_embed("Failed", "That user is not banned, or the ID is invalid."), ephemeral=True
             )
         except discord.Forbidden:
             return await interaction.followup.send(
-                embed=embeds.error_embed("Failed", "I don't have permission to unban.")
+                embed=embeds.error_embed("Failed", "I don't have permission to unban."), ephemeral=True
             )
 
         embed = embeds.success_embed("User Unbanned", f"Successfully unbanned user <@{user_id}>.")

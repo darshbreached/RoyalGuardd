@@ -1,9 +1,12 @@
 """
 cogs/warnings.py
 ------------------
-/warn            - issue a warning to a member, DM them a notice, log it
-/warnings        - view a member's warning history
-/clearwarnings   - wipe a member's entire warning history
+/warn            - issue a warning to a member, DM them a notice, log it,
+                    and post the confirmation publicly in-channel
+/warnings        - view a member's warning history (stays ephemeral - this
+                    is a lookup, not an action, so no reason to broadcast it)
+/clearwarnings   - wipe a member's entire warning history, posted publicly
+                    like the other moderation actions
 
 Warnings are stored directly in a "warnings" MongoDB collection (via
 db.warnings, same direct-collection-access pattern already used for
@@ -11,6 +14,13 @@ db.rankbinds in cogs/rankbinds.py) rather than through a dedicated helper
 method - no changes to database/mongodb.py needed.
 
 Each warning document: {guild_id, user_id, moderator_id, reason, timestamp}
+
+/warn and /clearwarnings defer non-ephemeral on purpose: once an
+interaction is deferred with ephemeral=True, Discord forces EVERY
+followup on that interaction to be ephemeral too, regardless of what you
+pass to followup.send() afterward - there's no way to override that
+per-followup. /warnings intentionally stays deferred ephemeral since it's
+meant to stay private.
 """
 
 import discord
@@ -39,7 +49,7 @@ class Warnings(commands.Cog):
     @app_commands.describe(user="The user to warn", reason="Reason for the warning")
     @require_level(20)
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         warning_doc = {
             "guild_id": str(interaction.guild.id),
@@ -100,7 +110,7 @@ class Warnings(commands.Cog):
     @app_commands.describe(user="The user whose warnings to clear")
     @require_level(30)
     async def clearwarnings(self, interaction: discord.Interaction, user: discord.Member):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         result = await db.warnings.delete_many({
             "guild_id": str(interaction.guild.id),
