@@ -6,7 +6,7 @@ Central branding and styling configuration for the Royal Guard bot.
 
 import os
 
-BOT_NAME = "Royal Guard Services ©"
+BOT_NAME = "Astral ©"
 BOT_TAG = "Canadian Army Verification System"
 BOT_VERSION = "All Rights Reserved."
 
