@@ -24,6 +24,10 @@ NOTE: the appeal DM only covers THIS server. It does not claim a ban
 applies to "all associated servers" - that would require a real
 cross-server ban-sync system, which doesn't exist here. Ask if you want
 that built as a separate feature.
+
+Every confirmation embed (ban/kick/mute/unmute/unban) is now stamped with
+the acting moderator's username and avatar via embed.set_author, so it
+reads as "this staff member did this" rather than a plain bot message.
 """
 
 import os
@@ -116,6 +120,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Banned", f"Successfully banned user {user.mention} with reason: {reason}")
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -132,6 +137,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Kicked", f"Successfully kicked user {user.mention} with reason: {reason}")
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -156,6 +162,7 @@ class Moderation(commands.Cog):
         embed = embeds.success_embed(
             "User Muted", f"Successfully muted {user.mention} for **{minutes} minutes** with reason: {reason}"
         )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -172,6 +179,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Unmuted", f"Successfully unmuted {user.mention}.")
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -193,6 +201,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Unbanned", f"Successfully unbanned user <@{user_id}>.")
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
