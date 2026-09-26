@@ -12,14 +12,16 @@ verified) yet. Flow:
   2. Reverse-lookup db.get_verification_by_roblox(roblox_id) to see if
      that Roblox account happens to be verified to a Discord member in
      this server.
-  3. Show the regiment dropdown, rank them on Roblox regardless of step 2
-     (Option A) - a regiment acceptance is a Roblox-side action and
-     shouldn't be blocked just because Discord verification hasn't
-     happened yet.
+  3. Show the regiment dropdown. On pick:
+       a. Call roblox.accept_group_join_request() FIRST - if this person
+          is still in the group's "Requests" tab rather than an actual
+          member, set_group_rank() fails with a generic "user is invalid
+          or does not exist" error that looks like a bad ID but actually
+          just means Roblox won't rank a non-member. Accepting the join
+          request first (if one exists) avoids that.
+       b. Then set_group_rank() as before.
   4. If a verified Discord member WAS found (and is still in this guild),
-     sync their Discord roles same as before. If not, skip the sync and
-     say so plainly in the confirmation - there's no Discord member to
-     sync roles onto.
+     sync their Discord roles. If not, skip the sync and say so plainly.
 """
 
 import discord
@@ -52,6 +54,16 @@ class RegimentSelect(discord.ui.Select):
 
         group_id = int(self.values[0])
         group_name = self.groups_info[self.values[0]]["name"]
+
+        # Accept any pending join request first - a no-op (returns False,
+        # doesn't raise) if they're already a member or never requested.
+        try:
+            await roblox.accept_group_join_request(group_id, self.roblox_id, guild_id=self.guild_id)
+        except RuntimeError as e:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Join Request Acceptance Failed", str(e)),
+                ephemeral=True,
+            )
 
         roles = await roblox.get_group_roles(group_id)
         entry_roles = sorted((r for r in roles if r["rank"] > 0), key=lambda r: r["rank"])
@@ -126,8 +138,6 @@ class AcceptRequest(commands.Cog):
             )
 
         roblox_id = roblox_user["id"]
-        # get_user_by_username returns whatever Roblox's real casing is - use
-        # that (not the raw input) everywhere from here on for consistency
         roblox_username = roblox_user.get("name", roblox_username)
 
         member = None
@@ -139,7 +149,7 @@ class AcceptRequest(commands.Cog):
                 try:
                     member = await interaction.guild.fetch_member(discord_id)
                 except discord.NotFound:
-                    member = None  # verified elsewhere or left this server
+                    member = None
 
         guild_config = await db.get_guild_config(interaction.guild.id)
         raw = guild_config.get("regiment_groups", "")

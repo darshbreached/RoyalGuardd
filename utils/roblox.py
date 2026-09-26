@@ -128,6 +128,94 @@ async def get_user_rank_in_group(roblox_id: int, group_id: int):
     return 0, "Guest"
 
 
+def _get_cookie(guild_config: dict | None):
+    cookie = None
+    if guild_config:
+        cookie = guild_config.get("roblox_cookie")
+    if not cookie:
+        cookie = os.getenv("ROBLOX_SECURITY_COOKIE")
+    return cookie
+
+
+def _extract_error_message(body: str) -> str:
+    try:
+        data = json.loads(body)
+        errors = data.get("errors") or []
+        if errors:
+            return errors[0].get("userFacingMessage") or errors[0].get("message") or body
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return body or "Unknown error from Roblox."
+
+
+# ============================================================
+# AUTHENTICATED GROUP JOIN-REQUEST HANDLING (service account required)
+# ============================================================
+async def accept_group_join_request(group_id: int, roblox_user_id: int, guild_id: int = None):
+    """Accepts a pending join request for roblox_user_id in group_id, using
+    the same per-guild-cookie-then-env-var-fallback pattern as
+    set_group_rank(). This must run BEFORE set_group_rank() for anyone who
+    is still in the group's "Requests" tab rather than already a member -
+    Roblox's rank-change endpoint returns a generic "user is invalid or
+    does not exist" error for a non-member, which looks identical to a
+    genuinely bad user ID unless you know to check the Requests tab.
+
+    NOTE: this endpoint/flow has not been confirmed against a live Roblox
+    response the way set_group_rank's has (that one has verified debug
+    logging from production use). If this raises or behaves unexpectedly,
+    capture the printed [ACCEPTJOIN DEBUG] status/body and it can be fixed
+    from the real response shape.
+
+    Returns True if a pending request was found and accepted. Returns
+    False (does NOT raise) if there was no pending request for this user -
+    that's an expected, non-error case: it just means they're already a
+    member (or never requested), so the caller should proceed straight to
+    set_group_rank() either way.
+
+    Raises RuntimeError only for an unexpected failure (bad/expired
+    cookie, permissions issue, etc.) - the caller should treat that the
+    same as a set_group_rank() RuntimeError and show it to the user.
+    """
+    guild_config = None
+    if guild_id is not None:
+        from database.mongodb import db
+        guild_config = await db.get_guild_config(guild_id)
+
+    cookie = _get_cookie(guild_config)
+    if not cookie:
+        raise RuntimeError("ROBLOX_SECURITY_COOKIE not configured - cannot accept join requests.")
+
+    cookies = {".ROBLOSECURITY": cookie}
+    url = f"{GROUPS_API}/groups/{group_id}/join-requests/users/{roblox_user_id}"
+
+    async with aiohttp.ClientSession(cookies=cookies) as session:
+        async with session.post(url) as resp:
+            body = await resp.text()
+            print(f"[ACCEPTJOIN DEBUG] first post status={resp.status} body={body}")
+            csrf_token = None
+            if resp.status == 403:
+                csrf_token = resp.headers.get("x-csrf-token")
+                print(f"[ACCEPTJOIN DEBUG] csrf_token_received={bool(csrf_token)}")
+            elif resp.status in (200, 204):
+                return True
+            elif resp.status == 400:
+                # No pending join request for this user - not an error,
+                # just means they're already a member or never requested.
+                return False
+            else:
+                raise RuntimeError(_extract_error_message(body))
+
+        headers = {"x-csrf-token": csrf_token} if csrf_token else {}
+        async with session.post(url, headers=headers) as resp:
+            body = await resp.text()
+            print(f"[ACCEPTJOIN DEBUG] second post status={resp.status} body={body}")
+            if resp.status in (200, 204):
+                return True
+            if resp.status == 400:
+                return False
+            raise RuntimeError(_extract_error_message(body))
+
+
 # ============================================================
 # AUTHENTICATED GROUP RANKING (service account required)
 # ============================================================
@@ -145,16 +233,16 @@ async def set_group_rank(group_id: int, roblox_user_id: int, role_id: int, guild
 
     Raises RuntimeError with Roblox's actual error message on failure, so
     callers can show the real reason instead of a generic "check your cookie"
-    message.
+    message. NOTE: Roblox returns this same generic error for a user who is
+    not yet a member of the group (still a pending join request) - call
+    accept_group_join_request() first if that might be the case.
     """
-    cookie = None
+    guild_config = None
     if guild_id is not None:
         from database.mongodb import db
         guild_config = await db.get_guild_config(guild_id)
-        cookie = guild_config.get("roblox_cookie")
 
-    if not cookie:
-        cookie = os.getenv("ROBLOX_SECURITY_COOKIE")
+    cookie = _get_cookie(guild_config)
 
     if not cookie:
         print(f"[SETRANK DEBUG] No cookie found (guild_id={guild_id}, checked per-guild config and env var).")
@@ -164,16 +252,6 @@ async def set_group_rank(group_id: int, roblox_user_id: int, role_id: int, guild
     url = f"{GROUPS_API}/groups/{group_id}/users/{roblox_user_id}"
 
     print(f"[SETRANK DEBUG] cookie_length={len(cookie)} url={url} role_id={role_id} guild_id={guild_id}")
-
-    def _extract_error_message(body: str) -> str:
-        try:
-            data = json.loads(body)
-            errors = data.get("errors") or []
-            if errors:
-                return errors[0].get("userFacingMessage") or errors[0].get("message") or body
-        except (json.JSONDecodeError, AttributeError):
-            pass
-        return body or "Unknown error from Roblox."
 
     async with aiohttp.ClientSession(cookies=cookies) as session:
         async with session.patch(url, json={"roleId": role_id}) as resp:
