@@ -25,9 +25,11 @@ applies to "all associated servers" - that would require a real
 cross-server ban-sync system, which doesn't exist here. Ask if you want
 that built as a separate feature.
 
-Every confirmation embed (ban/kick/mute/unmute/unban) is now stamped with
-the acting moderator's username and avatar via embed.set_author, so it
-reads as "this staff member did this" rather than a plain bot message.
+Every confirmation embed (ban/kick/mute/unmute/unban) is stamped with the
+acting moderator's username/avatar via embed.set_author, and forced to
+MOD_ACTION_COLOR (0x206694 / discord.Color.dark_blue()) regardless of
+whatever embeds.success_embed()'s own default color is, so the color is
+consistent across every mod action.
 """
 
 import os
@@ -41,6 +43,7 @@ from utils import embeds
 from utils.permissions import require_level
 
 WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
+MOD_ACTION_COLOR = discord.Color(0x206694)
 
 
 async def _log_action(guild: discord.Guild, log_type: str, embed: discord.Embed):
@@ -49,6 +52,14 @@ async def _log_action(guild: discord.Guild, log_type: str, embed: discord.Embed)
         channel = guild.get_channel(int(channel_id))
         if channel:
             await channel.send(embed=embed)
+
+
+def _stamp(embed: discord.Embed, moderator: discord.Member) -> discord.Embed:
+    """Applies the moderator author field + the fixed mod-action color to a
+    confirmation embed, in one place so every command stays consistent."""
+    embed.set_author(name=moderator.display_name, icon_url=moderator.display_avatar.url)
+    embed.color = MOD_ACTION_COLOR
+    return embed
 
 
 async def _send_action_dm(
@@ -120,7 +131,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Banned", f"Successfully banned user {user.mention} with reason: {reason}")
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        _stamp(embed, interaction.user)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -137,7 +148,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Kicked", f"Successfully kicked user {user.mention} with reason: {reason}")
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        _stamp(embed, interaction.user)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -162,7 +173,7 @@ class Moderation(commands.Cog):
         embed = embeds.success_embed(
             "User Muted", f"Successfully muted {user.mention} for **{minutes} minutes** with reason: {reason}"
         )
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        _stamp(embed, interaction.user)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -179,7 +190,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Unmuted", f"Successfully unmuted {user.mention}.")
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        _stamp(embed, interaction.user)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
@@ -201,7 +212,7 @@ class Moderation(commands.Cog):
             )
 
         embed = embeds.success_embed("User Unbanned", f"Successfully unbanned user <@{user_id}>.")
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        _stamp(embed, interaction.user)
         await interaction.followup.send(embed=embed)
         await _log_action(interaction.guild, "mod", embed)
 
