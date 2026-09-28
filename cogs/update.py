@@ -29,6 +29,16 @@ role_id -> {(group_id, rank_id), ...} across ALL groupbinds first, then
 checking whether the user's current rank in ANY of those groups matches ANY
 bound pair, fixes this: a shared role is only removed if it's not earned via
 any group it's bound in.
+
+IMPORTANT #3: groupbind roles (the "role_ids" list on a groupbind, set via
+/groupbind add ... role) are RoWifi-style "any rank in the group" roles. They
+go through the same global per-role evaluation as rankbind roles (so a role
+shared between a groupbind and a rankbind is one unit and can't be granted by
+one and stripped by the other), but they deliberately do NOT count toward
+has_any_rank. has_any_rank drives the sticky roles below (extra roles, ranks
+role, non-BA role), and being in some bound group just to get a groupbind
+role (an allied group, say) must not change those - only real rankbind
+matches do.
 """
 
 import asyncio
@@ -74,7 +84,11 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
     # Build ONE global map of role_id -> {(group_id, rank_id), ...} across
     # every bound group's rankbinds, so a role shared across multiple groups
     # is evaluated as a single unit - not once per group in isolation.
+    # Groupbind roles (any rank in the group) go in a second map,
+    # role_id -> {group_id, ...}, and are merged into the same per-role
+    # evaluation below.
     role_to_qualifying_pairs: dict[int, set[tuple[int, int]]] = {}
+    role_to_member_groups: dict[int, set[int]] = {}
     rankbinds_by_group: dict[int, list] = {}
     for gb in groupbinds:
         group_id = int(gb["group_id"])
@@ -83,14 +97,23 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
         for rb in rankbinds:
             role_id = int(rb["role_id"])
             role_to_qualifying_pairs.setdefault(role_id, set()).add((group_id, int(rb["rank_id"])))
+        for raw_role_id in gb.get("role_ids") or []:
+            role_to_member_groups.setdefault(int(raw_role_id), set()).add(group_id)
 
-    for role_id, qualifying_pairs in role_to_qualifying_pairs.items():
+    for role_id in set(role_to_qualifying_pairs) | set(role_to_member_groups):
         role = guild.get_role(role_id)
         if role is None:
             continue
 
-        should_have = any(rank_by_group.get(gid) == rid for gid, rid in qualifying_pairs)
-        if should_have:
+        earned_by_rank = any(
+            rank_by_group.get(gid) == rid for gid, rid in role_to_qualifying_pairs.get(role_id, ())
+        )
+        # rank 0 means "not in the group" (Guest), so membership = rank > 0
+        earned_by_group = any(
+            rank_by_group.get(gid, 0) > 0 for gid in role_to_member_groups.get(role_id, ())
+        )
+        should_have = earned_by_rank or earned_by_group
+        if earned_by_rank:
             has_any_rank = True
         has_role = role in member.roles
 
