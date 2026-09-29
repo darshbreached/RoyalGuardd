@@ -12,6 +12,17 @@ are bot-wide operations that shouldn't be grantable by a server admin.
 /dev reload    - hot-reload a single already-loaded cog
 /dev cogs      - list every currently loaded cog
 /dev dbstatus  - ping MongoDB and report latency
+/dev dbdump    - dump one or every MongoDB collection as a JSON file,
+                 sent as an ephemeral response so it's only visible to
+                 whoever ran the command, not posted in-channel. Read-only.
+                 This includes real PII across every guild the bot is in
+                 (verification records, IPs/countries logged at
+                 verification, tenant tokens - encrypted, not plaintext -
+                 admin levels, warnings, tickets). Delete the file locally
+                 once you're done with it, and never re-post it somewhere
+                 else. Discord's per-message file size cap (tied to the
+                 server's boost level) applies - dump a single collection
+                 with the `collection` option if a full dump is too large.
 /dev guilds    - list every server the bot is currently in
 /dev shutdown  - gracefully stop the bot (with a confirm button)
 !leave         - prefix command that makes the bot leave a server
@@ -27,6 +38,7 @@ are bot-wide operations that shouldn't be grantable by a server admin.
 
 import contextlib
 import io
+import json
 import textwrap
 import time
 import traceback
@@ -92,6 +104,10 @@ class DevTools(commands.Cog):
             app_commands.Command(name="dbstatus", description="Check MongoDB connectivity.", callback=self.dev_dbstatus)
         )
         self.group.add_command(
+            app_commands.Command(name="dbdump", description="Dump one or all MongoDB collections as a JSON file (owner only, ephemeral).",
+                                  callback=self.dev_dbdump)
+        )
+        self.group.add_command(
             app_commands.Command(name="guilds", description="List every server the bot is in.", callback=self.dev_guilds)
         )
         self.group.add_command(
@@ -112,6 +128,14 @@ class DevTools(commands.Cog):
     async def reload_autocomplete(self, interaction: discord.Interaction, current: str):
         loaded = sorted(interaction.client.extensions.keys())
         matches = [c for c in loaded if current.lower() in c.lower()]
+        return [app_commands.Choice(name=c, value=c) for c in matches[:25]]
+
+    async def collection_autocomplete(self, interaction: discord.Interaction, current: str):
+        try:
+            names = sorted(await db.db.list_collection_names())
+        except Exception:
+            return []
+        matches = [c for c in names if current.lower() in c.lower()]
         return [app_commands.Choice(name=c, value=c) for c in matches[:25]]
 
     @app_commands.check(_is_owner_check)
@@ -172,6 +196,44 @@ class DevTools(commands.Cog):
             await interaction.followup.send(
                 embed=embeds.error_embed("MongoDB Unreachable", f"```{type(e).__name__}: {e}```")
             )
+
+    @app_commands.check(_is_owner_check)
+    @app_commands.describe(
+        collection="Leave empty to dump every collection. Autocompletes from what's actually in the database.",
+    )
+    @app_commands.autocomplete(collection=collection_autocomplete)
+    async def dev_dbdump(self, interaction: discord.Interaction, collection: str = None):
+        """Read-only. Sent as an ephemeral response so only the command
+        invoker can see it - nothing is posted visibly in the channel."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if collection:
+                names = [collection]
+            else:
+                names = sorted(await db.db.list_collection_names())
+
+            dump = {}
+            for name in names:
+                dump[name] = await db.db[name].find({}).to_list(length=None)
+
+            text = json.dumps(dump, indent=2, default=str)
+            filename = f"{collection}_dump.json" if collection else "full_db_dump.json"
+            file = discord.File(io.BytesIO(text.encode("utf-8")), filename=filename)
+        except Exception as e:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Dump Failed", f"```{type(e).__name__}: {e}```")
+            )
+
+        total_docs = sum(len(v) for v in dump.values())
+        description = (
+            f"Dumped **{len(dump)}** collection(s), **{total_docs}** document(s) total. "
+            f"This is only visible to you and won't be posted in-channel - please delete it locally once "
+            f"you're done, and don't re-share it (it contains real user PII across every server I'm in)."
+        )
+        await interaction.followup.send(
+            embed=embeds.success_embed("Database Dump", description), file=file, ephemeral=True
+        )
 
     @app_commands.check(_is_owner_check)
     async def dev_guilds(self, interaction: discord.Interaction):
