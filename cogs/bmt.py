@@ -17,6 +17,7 @@ buttons keep working after a restart or redeploy.
 """
 
 import asyncio
+import traceback
 
 import discord
 from discord import app_commands
@@ -401,11 +402,12 @@ class BMT(commands.Cog):
                 (promoted if ok else failed).append(name)
                 await asyncio.sleep(1)  # don't hammer Roblox's ranking endpoint
         except Exception as e:
-            print(f"[BMT] accept failed: {e}")
+            print(f"[BMT DEBUG] accept failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
             # Safe to retry: already-promoted users are skipped on the next attempt.
             await _requests().update_one({"_id": doc["_id"]}, {"$set": {"status": "pending"}})
             await interaction.edit_original_response(view=BMTReviewView(self))
-            return await interaction.followup.send("Something went wrong while ranking. The request is back to pending, so you can press Accept again.", ephemeral=True)
+            return await interaction.followup.send(f"Something went wrong while ranking ({type(e).__name__}: {str(e)[:300]}). The request is back to pending, so you can press Accept again.", ephemeral=True)
 
         await _requests().update_one(
             {"_id": doc["_id"]},
