@@ -42,6 +42,8 @@ class Database:
         self.pending_tenants = self.db["pending_tenants"]
         self.global_bans = self.db["global_bans"]
         self.global_ban_subscriptions = self.db["global_ban_subscriptions"]
+        self.loa_requests = self.db["loa_requests"]
+        self.audit_log_cursors = self.db["audit_log_cursors"]
 
     async def ensure_indexes(self):
         import logging
@@ -77,6 +79,9 @@ class Database:
         await _safe_create_index(self.join_tracking, "timestamp", expireAfterSeconds=120)
         await _safe_create_index(self.global_bans, "discord_id", unique=True)
         await _safe_create_index(self.global_ban_subscriptions, "guild_id", unique=True)
+        await _safe_create_index(self.loa_requests, [("guild_id", 1), ("status", 1)])
+        await _safe_create_index(self.loa_requests, "end_time")
+        await _safe_create_index(self.audit_log_cursors, [("guild_id", 1), ("group_id", 1)], unique=True)
 
     # VERIFICATION (global, not per-guild)
     async def get_verification(self, discord_id: int):
@@ -503,6 +508,78 @@ class Database:
     async def list_subscribed_guild_ids(self):
         cursor = self.global_ban_subscriptions.find({})
         return [doc["guild_id"] async for doc in cursor]
+
+    # LOA (leave of absence) REQUESTS
+    async def create_loa_request(self, guild_id: int, user_id: int, days: int, reason: str):
+        request_id = str(ObjectId())
+        doc = {
+            "_id": request_id,
+            "guild_id": str(guild_id),
+            "user_id": str(user_id),
+            "days": days,
+            "reason": reason,
+            "status": "pending",  # pending -> approved -> ended, or denied
+            "created_at": time.time(),
+            "end_time": None,
+            "resolved_by": None,
+        }
+        await self.loa_requests.insert_one(doc)
+        return doc
+
+    async def get_loa_request(self, request_id: str):
+        return await self.loa_requests.find_one({"_id": request_id})
+
+    async def approve_loa_request(self, request_id: str, approved_by: int, end_time: float):
+        await self.loa_requests.update_one(
+            {"_id": request_id},
+            {"$set": {"status": "approved", "resolved_by": str(approved_by), "end_time": end_time}},
+        )
+
+    async def deny_loa_request(self, request_id: str, denied_by: int):
+        await self.loa_requests.update_one(
+            {"_id": request_id},
+            {"$set": {"status": "denied", "resolved_by": str(denied_by)}},
+        )
+
+    async def end_loa_request(self, request_id: str, ended_by: int = None):
+        update = {"status": "ended"}
+        if ended_by is not None:
+            update["ended_by"] = str(ended_by)
+        await self.loa_requests.update_one({"_id": request_id}, {"$set": update})
+
+    async def get_active_loa_for_user(self, guild_id: int, user_id: int):
+        return await self.loa_requests.find_one({
+            "guild_id": str(guild_id), "user_id": str(user_id), "status": "approved",
+        })
+
+    async def list_active_loas(self, guild_id: int):
+        cursor = self.loa_requests.find({"guild_id": str(guild_id), "status": "approved"})
+        return [doc async for doc in cursor]
+
+    async def list_pending_loa_requests(self):
+        cursor = self.loa_requests.find({"status": "pending"})
+        return [doc async for doc in cursor]
+
+    async def get_due_loa_requests(self, before: float):
+        cursor = self.loa_requests.find({"status": "approved", "end_time": {"$lte": before}})
+        return [doc async for doc in cursor]
+
+    # AUDIT LOG POLLING CURSORS
+    # One document per (guild_id, group_id), tracking the newest audit-log
+    # entry ID we've already posted, so the poll loop never re-posts old
+    # entries and never has to fetch the group's full history each time.
+    async def get_audit_cursor(self, guild_id: int, group_id: int):
+        return await self.audit_log_cursors.find_one({"guild_id": str(guild_id), "group_id": str(group_id)})
+
+    async def set_audit_cursor(self, guild_id: int, group_id: int, last_id: str, last_created: str = None):
+        await self.audit_log_cursors.update_one(
+            {"guild_id": str(guild_id), "group_id": str(group_id)},
+            {"$set": {
+                "guild_id": str(guild_id), "group_id": str(group_id),
+                "last_id": str(last_id), "last_created": last_created, "updated_at": time.time(),
+            }},
+            upsert=True,
+        )
 
 
 db = Database()
