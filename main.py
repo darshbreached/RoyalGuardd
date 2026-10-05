@@ -57,9 +57,9 @@ COGS = [
     "cogs.devtools",
     "cogs.globalban",
     "cogs.economy",
-    "cogs.boosterroles,"
-    "cogs.loa,"
-    "cogs.dmannounce,"
+    "cogs.boosterroles",
+    "cogs.loa",
+    "cogs.dmannounce",
 ]
 
 
