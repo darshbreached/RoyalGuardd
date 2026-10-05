@@ -3,17 +3,15 @@
 /dmannounce send [role]  -> modal (title, message, optional image) -> preview
                             -> Send / Cancel -> throttled DM broadcast
 /dmannounce cancel       -> stop a broadcast that is currently running
-/dmannounce optout       -> any member: stop receiving DM announcements from this server
-/dmannounce optin        -> any member: start receiving them again
 
 Safeguards (mass-DMing is the fastest way to get a bot flagged by Discord):
   * administrators only
   * preview + explicit confirmation before anything is sent
-  * bots and opted-out members are skipped
+  * bots are skipped
   * one broadcast per server at a time
   * ~1.5s between DMs, and the run aborts if Discord says we're opening DMs too fast
   * hard cap on recipients per broadcast (target a role for bigger groups)
-  * every DM tells the member why they got it and how to opt out
+  * every DM tells the member why they got it
   * every broadcast is logged to Mongo ("dm_announcements")
 
 Requires the Server Members intent (so the bot can see the member list).
@@ -29,7 +27,6 @@ from discord.ext import commands
 from database.mongodb import db
 from utils import embeds
 
-OPTOUT_COLLECTION = "dm_announce_optout"
 LOG_COLLECTION = "dm_announcements"
 
 DELAY_SECONDS = 1.5      # pause between DMs
@@ -72,8 +69,7 @@ def build_dm_embed(guild: discord.Guild, title: str, message: str, image: str) -
     embed.title = title
     embed.description = (
         f"{message}\n\n"
-        f"*You received this because you are a member of **{guild.name}**. "
-        f"To stop these, run `/dmannounce optout` in the server.*"
+        f"*You received this because you are a member of **{guild.name}**.*"
     )
     embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
     if image:
@@ -127,11 +123,11 @@ class AnnounceModal(discord.ui.Modal, title="DM Announcement"):
                 ephemeral=True,
             )
 
-        recipients, skipped_optout = await self.cog.collect_recipients(guild, self.role)
+        recipients = await self.cog.collect_recipients(guild, self.role)
 
         if not recipients:
             return await interaction.followup.send(
-                embed=embeds.error_embed("DM Announce", "There is nobody to send this to (everyone is a bot or has opted out)."),
+                embed=embeds.error_embed("DM Announce", "There is nobody to send this to (only bots matched)."),
                 ephemeral=True,
             )
         if len(recipients) > MAX_RECIPIENTS:
@@ -149,7 +145,7 @@ class AnnounceModal(discord.ui.Modal, title="DM Announcement"):
         preview = embeds.warning_embed(
             "DM Announce — Preview",
             f"This will be sent to **{len(recipients)}** {target}.\n"
-            f"Skipping {skipped_optout} opted-out member(s) and all bots.\n"
+            f"Bots are skipped.\n"
             f"Estimated time: {_fmt_minutes(len(recipients))}.\n\n"
             f"The embed below is exactly what they'll receive. Press **Send** to start.",
         )
@@ -228,31 +224,12 @@ class DMAnnounce(commands.Cog):
             embed=embeds.info_embed("DM Announce", "Stopping after the current message. You'll get the final report shortly."), ephemeral=True
         )
 
-    @dm.command(name="optout", description="Stop receiving DM announcements from this server.")
-    async def optout(self, interaction: discord.Interaction):
-        await db.db[OPTOUT_COLLECTION].update_one(
-            {"guild_id": interaction.guild.id, "user_id": interaction.user.id},
-            {"$set": {"guild_id": interaction.guild.id, "user_id": interaction.user.id}},
-            upsert=True,
-        )
-        await interaction.response.send_message(
-            embed=embeds.success_embed("DM Announce", "You won't receive DM announcements from this server anymore. Use `/dmannounce optin` to undo."),
-            ephemeral=True,
-        )
-
-    @dm.command(name="optin", description="Receive DM announcements from this server again.")
-    async def optin(self, interaction: discord.Interaction):
-        await db.db[OPTOUT_COLLECTION].delete_one({"guild_id": interaction.guild.id, "user_id": interaction.user.id})
-        await interaction.response.send_message(
-            embed=embeds.success_embed("DM Announce", "You'll receive DM announcements from this server again."), ephemeral=True
-        )
-
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
 
     async def collect_recipients(self, guild: discord.Guild, role):
-        """Return (members to DM, number skipped for opting out)."""
+        """Return the non-bot members to DM."""
         if not guild.chunked:
             try:
                 await guild.chunk()
@@ -260,19 +237,7 @@ class DMAnnounce(commands.Cog):
                 print(f"[DMANNOUNCE DEBUG] chunk failed: {e}")
 
         pool = guild.members if (role is None or role.is_default()) else role.members
-        opted_out = {
-            d["user_id"] async for d in db.db[OPTOUT_COLLECTION].find({"guild_id": guild.id}, {"user_id": 1})
-        }
-
-        recipients, skipped = [], 0
-        for m in pool:
-            if m.bot:
-                continue
-            if m.id in opted_out:
-                skipped += 1
-                continue
-            recipients.append(m)
-        return recipients, skipped
+        return [m for m in pool if not m.bot]
 
     async def _update(self, interaction: discord.Interaction, embed: discord.Embed, view=None):
         try:
