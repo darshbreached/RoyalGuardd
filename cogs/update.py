@@ -1,8 +1,9 @@
 """
 cogs/update.py
 ---------------
-/update       - syncs the invoking user's roles against all bound groups/ranks
-/updateall    - syncs every verified member in the server (admin level 10+)
+/update              - syncs the invoking user's roles against all bound groups/ranks
+/update member:@user - same, but for another member (admin level 5+)
+/updateall           - syncs every verified member in the server (admin level 10+)
 
 sync_member_roles is the shared core: it adds/removes Discord roles based
 on the member's live Roblox rank, and sets their nickname to
@@ -48,14 +49,20 @@ from discord.ext import commands
 
 from database.mongodb import db
 from utils import embeds, roblox
-from utils.permissions import require_level
+from utils.permissions import require_level, has_level
 from config import settings
 
+# Minimum admin level needed to run /update on someone other than yourself.
+UPDATE_OTHERS_MIN_LEVEL = 5
 
-async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox_id: int):
+
+async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox_id: int, triggered_by: discord.Member = None):
     """Compares the member's current roles against every rankbind, adds/removes
     roles as needed, sets their nickname to "<prefix> <roblox_username>",
     and logs the result. Returns (added, removed, nickname_changed).
+
+    triggered_by is only used for the log embed: when an admin updates someone
+    else, the log shows who the member is and who ran the update.
 
     Raises roblox.RobloxAPIError if any group's live rank can't be fetched -
     in that case NO roles are touched at all, to avoid a false de-rank from a
@@ -203,6 +210,9 @@ async def sync_member_roles(guild: discord.Guild, member: discord.Member, roblox
 
     if added or removed or nickname_changed:
         log_embed = embeds.info_embed("Roles Update", "Succesfully updated user roles")
+        if triggered_by is not None and triggered_by.id != member.id:
+            log_embed.add_field(name="Member", value=member.mention, inline=False)
+            log_embed.add_field(name="Updated By", value=triggered_by.mention, inline=False)
         log_embed.add_field(name="Nickname", value=member.nick or member.name, inline=False)
         log_embed.add_field(name="Roles Added", value=", ".join(added) if added else "None", inline=False)
         log_embed.add_field(name="Roles Removed", value=", ".join(removed) if removed else "None", inline=False)
@@ -236,19 +246,41 @@ class Update(commands.Cog):
         except discord.Forbidden:
             pass
 
-    @app_commands.command(name="update", description="Sync your own roles with your current Roblox group ranks.")
-    async def update(self, interaction: discord.Interaction):
+    @app_commands.command(name="update", description="Sync roles with current Roblox group ranks. Admin level 5+ can update others.")
+    @app_commands.describe(member="Member to update (admin level 5+ only). Leave empty to update yourself.")
+    async def update(self, interaction: discord.Interaction, member: discord.Member = None):
         await interaction.response.defer(ephemeral=True)
 
-        verification = await db.get_verification(interaction.user.id)
+        target = member or interaction.user
+        updating_other = target.id != interaction.user.id
+
+        if updating_other:
+            if target.bot:
+                return await interaction.followup.send(
+                    embed=embeds.error_embed("Warning - Invalid Member", "Bots can't be verified, so there is nothing to update.")
+                )
+            if not await has_level(interaction.user.id, interaction.guild, UPDATE_OTHERS_MIN_LEVEL):
+                return await interaction.followup.send(
+                    embed=embeds.error_embed(
+                        "Insufficient Permissions",
+                        f"You need admin level **{UPDATE_OTHERS_MIN_LEVEL}+** to update other members. "
+                        f"Run `/update` without the member option to update yourself."
+                    )
+                )
+
+        verification = await db.get_verification(target.id)
         if not verification:
+            who = f"{target.mention} must" if updating_other else "You must"
             return await interaction.followup.send(
-                embed=embeds.error_embed("Warning - Not Verified", "You must be verified to update your roles.")
+                embed=embeds.error_embed("Warning - Not Verified", f"{who} be verified to update roles.")
             )
 
         try:
             added, removed, nickname_changed = await sync_member_roles(
-                interaction.guild, interaction.user, int(verification["roblox_id"])
+                interaction.guild,
+                target,
+                int(verification["roblox_id"]),
+                triggered_by=interaction.user if updating_other else None,
             )
         except roblox.RobloxAPIError:
             return await interaction.followup.send(
@@ -258,8 +290,9 @@ class Update(commands.Cog):
                 )
             )
 
-        embed = embeds.success_embed("Roles Update", "Succesfully updated user roles")
-        embed.add_field(name="Nickname", value=interaction.user.nick or interaction.user.name, inline=False)
+        description = f"Succesfully updated roles for {target.mention}" if updating_other else "Succesfully updated user roles"
+        embed = embeds.success_embed("Roles Update", description)
+        embed.add_field(name="Nickname", value=target.nick or target.name, inline=False)
         embed.add_field(name="Roles Added", value=", ".join(added) if added else "None", inline=False)
         embed.add_field(name="Roles Removed", value=", ".join(removed) if removed else "None", inline=False)
 
