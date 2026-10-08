@@ -19,6 +19,7 @@ Notes:
 import asyncio
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from collections import deque
@@ -126,6 +127,7 @@ class Track:
     thumbnail: str
     requested_by: str
     resolved_at: float = field(default_factory=time.time)
+    started_at: float = 0.0
 
 
 class GuildPlayer:
@@ -191,6 +193,12 @@ class Music(commands.Cog):
         self.ffmpeg = _ffmpeg_exe()
         if not self.ffmpeg:
             print("[GRENADIER DEBUG] ffmpeg was not found — /play will not work until it's installed.")
+        else:
+            try:
+                out = subprocess.run([self.ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=15).stdout
+                print(f"[GRENADIER DEBUG] ffmpeg: {self.ffmpeg} | libopus encoder available: {'libopus' in out}")
+            except Exception as e:
+                print(f"[GRENADIER DEBUG] couldn't inspect ffmpeg: {e}")
         if COOKIE_FILE:
             print("[GRENADIER DEBUG] YouTube cookies loaded from YTDLP_COOKIES.")
 
@@ -299,6 +307,10 @@ class Music(commands.Cog):
     async def _on_track_end(self, guild_id: int):
         player = self.players.get(guild_id)
         if player is not None:
+            current = player.current
+            if current is not None and current.started_at and current.duration > 10 and time.time() - current.started_at < 5:
+                print(f"[GRENADIER DEBUG] '{current.title}' ended after {time.time() - current.started_at:.1f}s "
+                      f"(expected {current.duration}s) - ffmpeg probably failed to play it")
             player.current = None
         await self._advance(guild_id)
 
@@ -313,6 +325,7 @@ class Music(commands.Cog):
             before_options=FFMPEG_BEFORE,
             options="-vn",
         )
+        track.started_at = time.time()
         vc.play(source, after=lambda err, gid=guild.id: self._after(gid, err))
 
     async def _advance(self, guild_id: int, announce: bool = True):
