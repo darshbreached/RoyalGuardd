@@ -255,7 +255,8 @@ class Music(commands.Cog):
             text = str(e)
             if "Sign in to confirm" in text or "not a bot" in text:
                 raise TrackError("YouTube is blocking this server right now (bot check). The bot owner needs to add YouTube cookies.")
-            raise TrackError("I couldn't load that video. It may be private, age-restricted, region-locked or removed.")
+            reason = text.replace("ERROR: ", "").strip()[:200]
+            raise TrackError(f"I couldn't load that video. Reason: {reason}")
         except Exception as e:
             print(f"[GRENADIER DEBUG] extract failed: {type(e).__name__}: {e}")
             raise TrackError("Something went wrong while looking that up.")
