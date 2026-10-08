@@ -82,6 +82,17 @@ def _is_youtube_url(url: str) -> bool:
     return host in YOUTUBE_HOSTS
 
 
+SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"}
+
+
+def _is_allowed_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in YOUTUBE_HOSTS or host in SOUNDCLOUD_HOSTS
+
+
 def _fmt_duration(seconds) -> str:
     if not seconds:
         return "?:??"
@@ -96,6 +107,10 @@ def _clip(text: str, limit: int) -> str:
 
 class TrackError(Exception):
     """An error whose message is safe to show to users."""
+
+
+class SourceBlocked(TrackError):
+    """YouTube (or SoundCloud) refused the request - worth trying another source."""
 
 
 class NoResults(Exception):
@@ -237,12 +252,20 @@ class Music(commands.Cog):
     async def _resolve(self, query: str, requested_by: str) -> Track:
         query = query.strip()
         if query.lower().startswith(("http://", "https://")):
-            if not _is_youtube_url(query):
-                raise TrackError("Only YouTube links are supported. You can also just type a song name.")
-            target = query
-        else:
-            target = f"ytsearch1:{query}"
+            if not _is_allowed_url(query):
+                raise TrackError("Only YouTube and SoundCloud links are supported. You can also just type a song name.")
+            return await self._resolve_target(query, requested_by)
 
+        try:
+            return await self._resolve_target(f"ytsearch1:{query}", requested_by)
+        except SourceBlocked as yt_error:
+            print(f"[GRENADIER DEBUG] YouTube failed ({yt_error}); trying SoundCloud for: {query!r}")
+            try:
+                return await self._resolve_target(f"scsearch1:{query}", requested_by)
+            except TrackError:
+                raise yt_error  # SoundCloud had nothing either: report the original problem
+
+    async def _resolve_target(self, target: str, requested_by: str) -> Track:
         loop = asyncio.get_running_loop()
         try:
             info = await asyncio.wait_for(loop.run_in_executor(None, _extract, target), timeout=EXTRACT_TIMEOUT)
@@ -254,9 +277,9 @@ class Music(commands.Cog):
             print(f"[GRENADIER DEBUG] yt-dlp error: {e}")
             text = str(e)
             if "Sign in to confirm" in text or "not a bot" in text:
-                raise TrackError("YouTube is blocking this server right now (bot check). The bot owner needs to add YouTube cookies.")
+                raise SourceBlocked("YouTube is blocking this server right now (bot check). The bot owner needs to add YouTube cookies.")
             reason = text.replace("ERROR: ", "").strip()[:200]
-            raise TrackError(f"I couldn't load that video. Reason: {reason}")
+            raise SourceBlocked(f"I couldn't load that video. Reason: {reason}")
         except Exception as e:
             print(f"[GRENADIER DEBUG] extract failed: {type(e).__name__}: {e}")
             raise TrackError("Something went wrong while looking that up.")
