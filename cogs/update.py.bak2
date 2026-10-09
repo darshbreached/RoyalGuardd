@@ -249,25 +249,24 @@ class Update(commands.Cog):
     @app_commands.command(name="update", description="Sync roles with current Roblox group ranks. Admin level 5+ can update others.")
     @app_commands.describe(member="Member to update (admin level 5+ only). Leave empty to update yourself.")
     async def update(self, interaction: discord.Interaction, member: discord.Member = None):
+        await interaction.response.defer(ephemeral=True)
+
         target = member or interaction.user
         updating_other = target.id != interaction.user.id
 
-        # Checked before deferring so the denial can be a normal public reply.
-        if updating_other and not await has_level(interaction.user.id, interaction.guild, UPDATE_OTHERS_MIN_LEVEL):
-            denied = embeds.warning_embed(
-                "Warning - Insufficient Permissions",
-                f"The `member` option of this command is limited to the admin level **{UPDATE_OTHERS_MIN_LEVEL}**!",
-            )
-            denied.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
-            denied.color = discord.Color(0xFFA500)
-            return await interaction.response.send_message(embed=denied)
-
-        await interaction.response.defer(ephemeral=True)
-
-        if updating_other and target.bot:
-            return await interaction.followup.send(
-                embed=embeds.error_embed("Warning - Invalid Member", "Bots can't be verified, so there is nothing to update.")
-            )
+        if updating_other:
+            if target.bot:
+                return await interaction.followup.send(
+                    embed=embeds.error_embed("Warning - Invalid Member", "Bots can't be verified, so there is nothing to update.")
+                )
+            if not await has_level(interaction.user.id, interaction.guild, UPDATE_OTHERS_MIN_LEVEL):
+                return await interaction.followup.send(
+                    embed=embeds.error_embed(
+                        "Insufficient Permissions",
+                        f"You need admin level **{UPDATE_OTHERS_MIN_LEVEL}+** to update other members. "
+                        f"Run `/update` without the member option to update yourself."
+                    )
+                )
 
         verification = await db.get_verification(target.id)
         if not verification:

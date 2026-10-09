@@ -259,7 +259,6 @@ class Update(commands.Cog):
                 f"The `member` option of this command is limited to the admin level **{UPDATE_OTHERS_MIN_LEVEL}**!",
             )
             denied.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
-            denied.color = discord.Color(0xFFA500)
             return await interaction.response.send_message(embed=denied)
 
         await interaction.response.defer(ephemeral=True)
