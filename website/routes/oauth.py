@@ -11,7 +11,7 @@ Handles the Roblox OAuth2 authorization + callback flow.
 
 The oauth_states record (created by cogs/verification.py) carries which
 guild the /verify flow was started in, so the log gets posted to that
-guild's own "Darsh Industries" webhook (set via /setup ->
+guild's own verification-logs webhook (set via /setup ->
 Verification Logs Channel) if one exists. Falls back to the global
 DISCORD_VERIFICATION_WEBHOOK env var for guilds that haven't set one up,
 or for states created before this field existed.
@@ -105,6 +105,60 @@ def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str,
         requests.post(webhook_url, json={"embeds": [embed]}, timeout=5)
     except Exception:
         pass
+
+
+DISCORD_API = "https://discord.com/api/v10"
+
+
+def get_roblox_avatar(roblox_id):
+    """Headshot image URL from Roblox's public thumbnail service, or None."""
+    try:
+        resp = requests.get(
+            "https://thumbnails.roblox.com/v1/users/avatar-headshot",
+            params={"userIds": str(roblox_id), "size": "150x150", "format": "Png", "isCircular": "false"},
+            timeout=3,
+        )
+        if resp.status_code != 200:
+            return None
+        item = (resp.json().get("data") or [{}])[0]
+        return item.get("imageUrl") if item.get("state") == "Completed" else None
+    except Exception:
+        return None
+
+
+def get_discord_profile(discord_id: str) -> dict:
+    """Username + avatar for the Discord account.
+
+    Needs DISCORD_TOKEN on this service to read the username/avatar. Without it
+    (or if Discord doesn't answer) it falls back to no username and Discord's
+    default avatar, so the success page never breaks."""
+    try:
+        default_index = (int(discord_id) >> 22) % 6
+    except (TypeError, ValueError):
+        default_index = 0
+    result = {"username": None, "avatar_url": f"https://cdn.discordapp.com/embed/avatars/{default_index}.png"}
+
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        return result
+    try:
+        resp = requests.get(
+            f"{DISCORD_API}/users/{discord_id}",
+            headers={"Authorization": f"Bot {token}"},
+            timeout=3,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Discord user lookup failed with status {resp.status_code}")
+            return result
+        data = resp.json()
+        result["username"] = data.get("username")
+        avatar = data.get("avatar")
+        if avatar:
+            ext = "gif" if avatar.startswith("a_") else "png"
+            result["avatar_url"] = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar}.{ext}?size=256"
+        return result
+    except Exception:
+        return result
 
 
 @oauth_bp.route("/authorize")
@@ -202,4 +256,13 @@ def callback():
 
     _db["oauth_states"].delete_one({"state": state})
 
-    return render_template("success.html", roblox_username=roblox_username)
+    discord_info = get_discord_profile(discord_id)
+    return render_template(
+        "success.html",
+        roblox_username=roblox_username,
+        roblox_id=str(roblox_id),
+        roblox_avatar=get_roblox_avatar(roblox_id),
+        discord_username=discord_info["username"],
+        discord_id=str(discord_id),
+        discord_avatar=discord_info["avatar_url"],
+    )

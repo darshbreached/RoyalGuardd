@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Darsh Industries{% endblock %}</title>
+  <title>{% block title %}Verification{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #14161B;
+      --bg: #000000;
       --panel: #1C1F26;
       --border: rgba(215, 222, 232, 0.10);
       --text: #F2F4F7;
@@ -20,43 +20,13 @@
     }
     * { box-sizing: border-box; }
     body {
-      background: var(--bg);
-      background-image:
-        radial-gradient(ellipse 700px 400px at 50% -5%, rgba(143,166,201,0.10), transparent 65%);
+      background: #000000;
       color: var(--text);
       font-family: 'Inter', sans-serif;
       margin: 0;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-    }
-
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 28px 24px 0;
-    }
-    header img {
-      width: 30px;
-      height: 30px;
-      object-fit: contain;
-      display: block;
-      flex-shrink: 0;
-    }
-    header .wordmark {
-      font-family: 'Space Grotesk', sans-serif;
-      font-weight: 500;
-      font-size: 15px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--text);
-      white-space: nowrap;
-    }
-    header .wordmark span {
-      color: var(--text-dim);
-      font-weight: 400;
     }
 
     main {
@@ -73,8 +43,9 @@
       font-size: 11.5px;
       letter-spacing: 0.05em;
       color: var(--text-dim);
-      opacity: 0.7;
     }
+    footer a { color: var(--text-dim); text-decoration: none; margin: 0 10px; }
+    footer a:hover { color: var(--text); }
 
     a { color: var(--glass); }
 
@@ -98,13 +69,12 @@
   </style>
 </head>
 <body>
-  <header>
-    <img src="{{ url_for('static', filename='images/logo-mark.png') }}" alt="Darsh Industries" width="30" height="30">
-    <div class="wordmark">Darsh <span>Industries</span></div>
-  </header>
   <main>
     {% block content %}{% endblock %}
   </main>
-  <footer>Darsh Industries — Bot Hosting</footer>
+  <footer>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+  </footer>
 </body>
 </html>
