@@ -23,7 +23,7 @@ are bot-wide operations that shouldn't be grantable by a server admin.
                  else. Discord's per-message file size cap (tied to the
                  server's boost level) applies - dump a single collection
                  with the `collection` option if a full dump is too large.
-/dev guilds    - list every server the bot is currently in
+/dev guilds    - list every server the bot is in, with an invite link for each
 /dev shutdown  - gracefully stop the bot (with a confirm button)
 !leave         - prefix command that makes the bot leave a server
 !eval          - prefix command that executes arbitrary async Python.
@@ -36,6 +36,7 @@ are bot-wide operations that shouldn't be grantable by a server admin.
                  anywhere public).
 """
 
+import asyncio
 import contextlib
 import io
 import json
@@ -56,6 +57,53 @@ async def _is_owner_check(interaction: discord.Interaction) -> bool:
     if not is_owner:
         raise app_commands.CheckFailure("Developer tools are restricted to the bot owner.")
     return True
+
+
+INVITE_TTL_SECONDS = 3600
+_invite_cache = {}  # guild_id -> (url, expires_at)
+
+
+async def _guild_invite(guild: discord.Guild) -> str:
+    """An invite URL for the guild, or a short note saying why there isn't one.
+
+    Reuses a permanent invite when the bot may list invites; otherwise makes a
+    short-lived single-use one (and remembers it so re-running /dev guilds
+    doesn't spam the server's audit log with new invites)."""
+    cached = _invite_cache.get(guild.id)
+    if cached and cached[1] - time.time() > 300:
+        return cached[0]
+
+    me = guild.me
+    if me is None:
+        return "(bot member not cached)"
+    if "INVITES_DISABLED" in guild.features:
+        return "(invites are paused in this server)"
+
+    if me.guild_permissions.manage_guild:
+        try:
+            for inv in await guild.invites():
+                if inv.max_age == 0 and inv.max_uses == 0 and not inv.temporary:
+                    return inv.url
+        except discord.HTTPException:
+            pass
+
+    tried = 0
+    for channel in [guild.system_channel] + list(guild.text_channels):
+        if channel is None or not channel.permissions_for(me).create_instant_invite:
+            continue
+        if tried >= 5:
+            break
+        tried += 1
+        try:
+            invite = await channel.create_invite(
+                max_age=INVITE_TTL_SECONDS, max_uses=1, unique=True,
+                reason="Bot owner requested via /dev guilds",
+            )
+        except discord.HTTPException:
+            continue
+        _invite_cache[guild.id] = (invite.url, time.time() + INVITE_TTL_SECONDS)
+        return invite.url
+    return "(no invite: the bot lacks Create Invite permission here)"
 
 
 class ShutdownConfirmView(discord.ui.View):
@@ -237,11 +285,47 @@ class DevTools(commands.Cog):
 
     @app_commands.check(_is_owner_check)
     async def dev_guilds(self, interaction: discord.Interaction):
-        guilds = interaction.client.guilds
-        lines = [f"**{g.name}** (`{g.id}`) - {g.member_count} members" for g in guilds]
-        text = "\n".join(lines) if lines else "Not in any servers."
-        embed = embeds.info_embed(f"Servers ({len(guilds)})", text[:4000])
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guilds = sorted(interaction.client.guilds, key=lambda g: g.member_count or 0, reverse=True)
+        if not guilds:
+            return await interaction.followup.send(
+                embed=embeds.info_embed("Servers (0)", "Not in any servers."), ephemeral=True
+            )
+
+        sem = asyncio.Semaphore(4)
+
+        async def fetch(g):
+            async with sem:
+                try:
+                    return await _guild_invite(g)
+                except Exception as e:
+                    return f"(invite lookup failed: {type(e).__name__})"
+
+        links = await asyncio.gather(*(fetch(g) for g in guilds))
+
+        entries = []
+        for g, link in zip(guilds, links):
+            owner = f"<@{g.owner_id}>" if g.owner_id else "unknown"
+            entries.append(
+                f"**{discord.utils.escape_markdown(g.name)}** · `{g.id}` · {g.member_count} members\n"
+                f"Owner: {owner}\n{link}"
+            )
+
+        pages, current = [], ""
+        for entry in entries:
+            if current and len(current) + len(entry) + 2 > 3800:
+                pages.append(current)
+                current = ""
+            current += ("\n\n" if current else "") + entry
+        if current:
+            pages.append(current)
+
+        for i, page in enumerate(pages, start=1):
+            title = f"Servers ({len(guilds)})" + (f" - page {i}/{len(pages)}" if len(pages) > 1 else "")
+            embed = embeds.info_embed(title, page)
+            if i == len(pages):
+                embed.set_footer(text="To make the bot leave a server: !leave <server id>")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.check(_is_owner_check)
     async def dev_shutdown(self, interaction: discord.Interaction):
