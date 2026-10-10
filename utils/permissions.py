@@ -22,6 +22,20 @@ from config import settings
 
 BOT_OWNER_ID = os.getenv("BOT_OWNER_ID")
 
+PERMISSION_DENIED_COLOR = discord.Color(0xFFA500)
+
+
+def insufficient_permissions_embed(user, description: str) -> discord.Embed:
+    """The standard 'Warning - Insufficient Permissions' embed: orange bar, with
+    the user's avatar and name on top. Use this for every permission denial."""
+    embed = discord.Embed(
+        title="Warning - Insufficient Permissions",
+        description=description,
+        color=PERMISSION_DENIED_COLOR,
+    )
+    embed.set_author(name=user.name, icon_url=user.display_avatar.url)
+    return embed
+
 
 async def has_level(user_id: int, guild: discord.Guild, required: int) -> bool:
     if BOT_OWNER_ID and str(user_id) == str(BOT_OWNER_ID):
@@ -46,12 +60,10 @@ def require_level(required: int):
         ok = await has_level(interaction.user.id, interaction.guild, required)
         if not ok:
             await interaction.response.send_message(
-                embed=discord.Embed(
-                    title="Insufficient Permissions",
-                    description=f"You need admin level **{required}+** to use this command.",
-                    color=settings.ERROR_COLOR,
-                ),
-                ephemeral=True,
+                embed=insufficient_permissions_embed(
+                    interaction.user,
+                    f"This command is limited to the admin level **{required}**!",
+                )
             )
         return ok
 
