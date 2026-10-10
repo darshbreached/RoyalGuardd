@@ -2,90 +2,66 @@
 {% block title %}Verified{% endblock %}
 {% block content %}
 <style>
-  .wrap{display:flex;flex-direction:column;align-items:center;font-family:'Inter',sans-serif;text-align:center;width:100%;}
+  .page{width:100%;max-width:460px;}
+  .page h1{font-size:20px;font-weight:600;margin:0 0 6px;color:#fff;}
+  .lead{margin:0 0 18px;font-size:14px;line-height:1.5;color:#fff;opacity:.75;}
 
-  .ring-wrap{position:relative;width:72px;height:72px;opacity:0;transform:scale(.7);animation:ring-in .5s cubic-bezier(.25,.8,.3,1.15) .05s forwards;}
-  .ring{width:100%;height:100%;border-radius:50%;border:2px solid #5EA37A;display:flex;align-items:center;justify-content:center;}
-  .ring svg{width:30px;height:30px;stroke:#5EA37A;}
-  .pulse{position:absolute;inset:0;border-radius:50%;border:1.5px solid #5EA37A;opacity:0;animation:pulse-out .6s ease-out .45s forwards;}
-  @keyframes ring-in{0%{opacity:0;transform:scale(.7);}70%{opacity:1;transform:scale(1.05);}100%{opacity:1;transform:scale(1);}}
-  @keyframes pulse-out{0%{opacity:.8;transform:scale(.9);}100%{opacity:0;transform:scale(1.4);}}
+  .card{background:#3a3a3a;border:1px solid #4d4d4d;border-radius:6px;color:#fff;}
+  .acct{display:flex;gap:16px;padding:18px;}
+  .acct + .acct{border-top:1px solid #4d4d4d;}
 
-  h1{font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:22px;color:#FFFFFF;margin:20px 0 0;opacity:0;animation:fade-up .35s ease-out .5s forwards;}
-
-  /* the grey info box */
-  .box{
-    margin-top:24px;width:100%;max-width:440px;
-    background:#404040;color:#FFFFFF;border-radius:12px;padding:26px 24px 8px;
-    text-align:left;opacity:0;animation:fade-up .35s ease-out .65s forwards;
+  .pic{
+    position:relative;flex:0 0 64px;width:64px;height:64px;border-radius:6px;overflow:hidden;
+    background:#555;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600;
   }
-  .avatars{display:flex;justify-content:center;gap:36px;margin-bottom:20px;}
-  .acct{display:flex;flex-direction:column;align-items:center;gap:8px;}
-  .avatar{
-    position:relative;width:92px;height:92px;border-radius:50%;overflow:hidden;
-    background:#5A5A5A;display:flex;align-items:center;justify-content:center;
-    font-family:'Space Grotesk',sans-serif;font-size:34px;font-weight:500;color:#FFFFFF;
-  }
-  .avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
-  .acct .cap{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:#FFFFFF;opacity:.7;}
+  .pic img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
 
-  .rows{margin:0;padding:0;}
-  .row{display:flex;justify-content:space-between;align-items:baseline;gap:18px;padding:13px 0;border-top:1px solid rgba(255,255,255,.14);}
-  .row dt{font-size:12.5px;color:#FFFFFF;opacity:.7;white-space:nowrap;}
-  .row dd{margin:0;font-size:14px;font-weight:500;color:#FFFFFF;text-align:right;overflow-wrap:anywhere;}
+  .info{flex:1;min-width:0;}
+  .info h2{margin:0 0 6px;font-size:13px;font-weight:600;}
+  .info table{border-collapse:collapse;width:100%;font-size:13px;}
+  .info td{padding:2px 0;vertical-align:top;}
+  .info td:first-child{width:76px;opacity:.7;}
+  .info td:last-child{overflow-wrap:anywhere;}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;}
 
-  .instructions{
-    margin-top:20px;font-size:12.5px;color:#FFFFFF;opacity:0;max-width:360px;line-height:1.6;
-    animation:fade-note .35s ease-out .85s forwards;text-align:center;
-  }
-  .instructions code{font-family:'Space Grotesk',monospace;background:#404040;padding:1px 6px;border-radius:4px;}
-
-  @keyframes fade-up{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
-  @keyframes fade-note{from{opacity:0;transform:translateY(6px);}to{opacity:.75;transform:translateY(0);}}
-  @media (prefers-reduced-motion:reduce){
-    .ring-wrap,h1,.box{opacity:1!important;transform:none!important;animation:none!important;}
-    .instructions{opacity:.75!important;transform:none!important;animation:none!important;}
-    .pulse{display:none;}
-  }
+  .note{margin:14px 0 0;font-size:12.5px;line-height:1.6;color:#fff;opacity:.65;}
+  .note code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
 </style>
 
-<div class="wrap">
-  <div class="ring-wrap">
-    <div class="ring">
-      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="4 12 9 17 20 6"></polyline>
-      </svg>
-    </div>
-    <div class="pulse"></div>
-  </div>
-  <h1>Verified</h1>
+<div class="page">
+  <h1>Verification complete</h1>
+  <p class="lead">Your Roblox account is linked to your Discord account.</p>
 
-  <div class="box">
-    <div class="avatars">
-      <div class="acct">
-        <div class="avatar">
-          <span>{{ (roblox_username or '?')[:1]|upper }}</span>
-          {% if roblox_avatar %}<img src="{{ roblox_avatar }}" alt="Roblox avatar" onerror="this.style.display='none'">{% endif %}
-        </div>
-        <div class="cap">Roblox</div>
+  <div class="card">
+    <div class="acct">
+      <div class="pic">
+        <span>{{ (roblox_username or '?')[:1]|upper }}</span>
+        {% if roblox_avatar %}<img src="{{ roblox_avatar }}" alt="Roblox avatar" onerror="this.style.display='none'">{% endif %}
       </div>
-      <div class="acct">
-        <div class="avatar">
-          <span>{{ (discord_username or '?')[:1]|upper }}</span>
-          {% if discord_avatar %}<img src="{{ discord_avatar }}" alt="Discord avatar" onerror="this.style.display='none'">{% endif %}
-        </div>
-        <div class="cap">Discord</div>
+      <div class="info">
+        <h2>Roblox</h2>
+        <table>
+          <tr><td>Username</td><td>{{ roblox_username or 'Unknown' }}</td></tr>
+          <tr><td>User ID</td><td class="mono">{{ roblox_id }}</td></tr>
+        </table>
       </div>
     </div>
 
-    <dl class="rows">
-      <div class="row"><dt>Roblox Username</dt><dd>{{ roblox_username or 'Unknown' }}</dd></div>
-      <div class="row"><dt>Roblox User ID</dt><dd>{{ roblox_id }}</dd></div>
-      <div class="row"><dt>Discord Username</dt><dd>{{ discord_username or 'Unknown' }}</dd></div>
-      <div class="row"><dt>Discord User ID</dt><dd>{{ discord_id }}</dd></div>
-    </dl>
+    <div class="acct">
+      <div class="pic">
+        <span>{{ (discord_username or '?')[:1]|upper }}</span>
+        {% if discord_avatar %}<img src="{{ discord_avatar }}" alt="Discord avatar" onerror="this.style.display='none'">{% endif %}
+      </div>
+      <div class="info">
+        <h2>Discord</h2>
+        <table>
+          <tr><td>Username</td><td>{{ discord_username or 'Unknown' }}</td></tr>
+          <tr><td>User ID</td><td class="mono">{{ discord_id }}</td></tr>
+        </table>
+      </div>
+    </div>
   </div>
 
-  <div class="instructions">Close this tab and go back to Discord. Run <code>/update</code> or press <strong>Update Roles</strong> to sync.</div>
+  <p class="note">You can close this tab. In Discord, run <code>/update</code> or press Update Roles to get your roles.</p>
 </div>
 {% endblock %}
