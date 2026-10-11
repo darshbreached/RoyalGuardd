@@ -22,7 +22,8 @@ from website.routes.gameverify import gameverify_bp
 app.register_blueprint(gameverify_bp)
 @app.route("/")
 def index():
-    return render_template("index.html")
+    from website.servers import get_listing
+    return render_template("index.html", **get_listing())
 @app.route("/health")
 def health():
     return {"status": "healthy"}

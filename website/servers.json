@@ -1,0 +1,16 @@
+{
+  "title": "Regiment Servers",
+  "intro": "Pick a regiment and join its Discord.",
+  "servers": [
+    {
+      "invite": "https://discord.gg/RTcnkYWNB9",
+      "category": "United Kingdom Special Forces",
+      "description": "British Army's Special Forces."
+    },
+    {
+      "invite": "https://discord.gg/Utw9efmdP7",
+      "category": "Parachute Regiment/ 16th Air Assault Brigade",
+      "description": "British Army's Air Support."
+    }
+  ]
+}
