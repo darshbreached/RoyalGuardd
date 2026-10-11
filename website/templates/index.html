@@ -36,9 +36,6 @@
   .join.off:hover{background:#4a4a4a;}
   .empty,#none{font-size:14px;color:#fff;opacity:.65;}
   #none[hidden]{display:none;}
-  .foot{margin:30px 0 0;font-size:12.5px;}
-  .foot a{color:#fff;opacity:.55;}
-  .foot a:hover{opacity:.9;}
 </style>
 
 <div class="dir">
@@ -76,8 +73,6 @@
   {% else %}
   <p class="empty">No servers are listed yet.</p>
   {% endif %}
-
-  <p class="foot"><a href="{{ url_for('tenant.tenant_register') }}">Commission a bot</a></p>
 </div>
 
 <script>
