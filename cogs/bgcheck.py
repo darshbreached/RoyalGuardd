@@ -21,7 +21,7 @@ from discord.ext import commands
 from datetime import datetime, timezone
 
 from database.mongodb import db
-from utils import embeds, roblox
+from utils import embeds, roblox, robloxinventory
 from config import settings
 
 PREV_EMOJI = "⬅️"
@@ -128,8 +128,9 @@ class BGCheck(commands.Cog):
             roblox_embed.add_field(name="ROBLOX Account Friends", value=str(friends), inline=False)
             roblox_embed.add_field(name="ROBLOX Account Followers", value=str(followers), inline=False)
             roblox_embed.add_field(name="ROBLOX Account Following", value=str(following), inline=False)
-            roblox_embed.add_field(name="ROBLOX Account Gamepasses Owned", value="Not Programmed.", inline=False)
-            roblox_embed.add_field(name="ROBLOX Account Badges Owned", value="Not Programmed.", inline=False)
+            inventory = await robloxinventory.get_inventory_counts(roblox_id)
+            roblox_embed.add_field(name="ROBLOX Account Gamepasses Owned", value=robloxinventory.format_result(inventory["gamepasses"]), inline=False)
+            roblox_embed.add_field(name="ROBLOX Account Badges Owned", value=robloxinventory.format_result(inventory["badges"]), inline=False)
         else:
             roblox_embed.add_field(name="ROBLOX Account Status", value="This user has not verified their Roblox account.", inline=False)
 
