@@ -46,6 +46,8 @@ LOG_CHANNEL_KIND = "ranking"  # which /setup log channel gets the audit embed (s
 SAFE, SENSITIVE, BLOCKED = "safe", "sensitive", "blocked"
 
 # key (as Roblox names it) -> (label, category, tier)
+# NOTE: manageClan was removed - Roblox retired clans and the API now answers
+# "Role permission does not exist" (code 22) for it.
 PERMISSIONS = {
     "viewWall":              ("View group wall", "Posts", SAFE),
     "postToWall":            ("Post on the group wall", "Posts", SAFE),
@@ -57,7 +59,6 @@ PERMISSIONS = {
     "changeRank":            ("Change member ranks", "Membership", SENSITIVE),
     "removeMembers":         ("Remove (exile) members", "Membership", SENSITIVE),
     "manageRelationships":   ("Manage allies and enemies", "Management", SENSITIVE),
-    "manageClan":            ("Manage the clan", "Management", SENSITIVE),
     "spendGroupFunds":       ("Spend group funds", "Economy", BLOCKED),
     "advertiseGroup":        ("Advertise the group (costs Robux)", "Economy", BLOCKED),
     "createItems":           ("Create items", "Economy", BLOCKED),
@@ -149,6 +150,8 @@ def explain_failure(status: int, body: str) -> str:
                 "Usually the cookie's account has to be the group **owner**.")
     if code == 4:
         return "Roblox says that role's permissions can't be modified (for example the owner role)."
+    if code == 22:
+        return "Roblox doesn't recognise that permission any more (it may have been removed)."
     if status == 401:
         return "Roblox rejected the cookie (it may have expired). Update it in `/setup` and try again."
     if status == 429:
