@@ -33,6 +33,7 @@ INTENTS.invites = True
 COGS = [
     "cogs.adminlevels",
     "cogs.groupbinds",
+    "cogs.grouprole",
     "cogs.rankbinds",
     "cogs.update",
     "cogs.verification",
