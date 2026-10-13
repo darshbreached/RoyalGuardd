@@ -3,14 +3,21 @@ cogs/grouprole.py
 ------------------
 Turn Roblox group role permissions on or off from Discord.
 
+/grouprole ids group_id
+    Lists every role in a bound group with its role ID (public info, no cookie needed).
+
 /grouprole view group_id role
     Read-only: shows what a role can currently do (and the exact names Roblox uses).
 
 /grouprole permission group_id role permission [enabled]
     Turns ONE permission on (default) or off for ONE role.
 
+/grouprole multi group_id role [enabled]
+    Pick SEVERAL permissions from a dropdown and turn them all on (default) or off.
+
 Safety rules (all enforced in code, edit the constants below to change them):
-  * needs admin level GROUPROLE_MIN_LEVEL
+  * /grouprole ids needs admin level GROUPROLE_IDS_MIN_LEVEL
+  * view/permission/multi need admin level GROUPROLE_MIN_LEVEL
   * only works on groups already bound to this server with /groupbind
   * uses this server's own Roblox cookie (/setup -> Ranking -> ROBLOX Cookie). The
     shared ROBLOX_SECURITY_COOKIE is only used when the bot owner runs it - otherwise a
@@ -39,7 +46,9 @@ from utils import embeds, roblox
 from utils.permissions import require_level
 
 GROUPROLE_MIN_LEVEL = 50
+GROUPROLE_IDS_MIN_LEVEL = 10  # who can run /grouprole ids
 CONFIRM_TIMEOUT = 60
+PICK_TIMEOUT = 120
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 LOG_CHANNEL_KIND = "ranking"  # which /setup log channel gets the audit embed (skipped if unset)
 
@@ -80,6 +89,9 @@ PERMISSION_CHOICES = [
 # Roblox's PATCH naming isn't consistent with its GET naming in every place, so each
 # permission is tried under a few spellings and every attempt is verified by re-reading.
 _ALIASES = {"viewAuditLogs": ["ViewAuditLog", "ViewAuditLogs", "viewAuditLogs", "viewAuditLog"]}
+
+# If a failure message contains one of these, retrying other permissions won't help.
+_FATAL_HINTS = ("owner", "rate limiting", "rejected the cookie", "Couldn't reach Roblox")
 
 
 def _debug(message: str):
@@ -236,6 +248,39 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 
+class PickView(discord.ui.View):
+    """Multi-select dropdown of every non-blocked permission."""
+
+    def __init__(self, invoker_id: int):
+        super().__init__(timeout=PICK_TIMEOUT)
+        self.invoker_id = invoker_id
+        self.values = None
+        options = [
+            discord.SelectOption(label=label[:100], value=key, description=cat)
+            for key, (label, cat, tier) in PERMISSIONS.items()
+            if tier != BLOCKED
+        ]
+        self.select = discord.ui.Select(
+            placeholder="Pick one or more permissions...",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+        self.select.callback = self._picked
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("Only the person who ran the command can use this menu.", ephemeral=True)
+            return False
+        return True
+
+    async def _picked(self, interaction: discord.Interaction):
+        self.values = list(self.select.values)
+        await interaction.response.defer()
+        self.stop()
+
+
 class GroupRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -245,7 +290,7 @@ class GroupRole(commands.Cog):
     # ---- shared checks --------------------------------------------------- #
 
     async def _context(self, interaction: discord.Interaction, group_id: int, role_id: int):
-        """Validate everything common to both commands. Returns a dict, or an error string."""
+        """Validate everything common to the commands. Returns a dict, or an error string."""
         guild = interaction.guild
         binds = await db.list_groupbinds(guild.id)
         bound = next((b for b in binds if str(b["group_id"]) == str(group_id)), None)
@@ -315,6 +360,40 @@ class GroupRole(commands.Cog):
                 continue
             out.append(app_commands.Choice(name=f"{r['name']} (Rank {r['rank']})"[:100], value=int(r["id"])))
         return out[:25]
+
+    # ---- /grouprole ids -------------------------------------------------- #
+
+    @grouprole.command(name="ids", description="List every role in a group with its role ID.")
+    @app_commands.describe(group_id="A Roblox group bound to this server")
+    @require_level(GROUPROLE_IDS_MIN_LEVEL)
+    async def ids(self, interaction: discord.Interaction, group_id: int):
+        await interaction.response.defer(ephemeral=True)
+        binds = await db.list_groupbinds(interaction.guild.id)
+        bound = next((b for b in binds if str(b["group_id"]) == str(group_id)), None)
+        if bound is None:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Can't Do That", "That group isn't bound to this server. Bind it first with `/groupbind add`."),
+                ephemeral=True,
+            )
+        try:
+            roles = await roblox.get_group_roles(group_id)
+        except Exception:
+            roles = None
+        if not roles:
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Can't Do That", "I couldn't load that group's roles from Roblox."), ephemeral=True
+            )
+
+        rows = [
+            f"**{r.get('name')}** (Rank {r.get('rank')}) - `{r.get('id')}`"
+            for r in sorted(roles, key=lambda r: r.get("rank", 0))
+        ]
+        title = f"Role IDs - {bound.get('group_name') or group_id}"
+        await interaction.followup.send(embed=embeds.info_embed(title, "\n".join(rows)[:4000]), ephemeral=True)
+
+    @ids.autocomplete("group_id")
+    async def _ids_group_ac(self, interaction: discord.Interaction, current: str):
+        return await self._group_choices(interaction, current)
 
     # ---- /grouprole view ------------------------------------------------- #
 
@@ -418,6 +497,101 @@ class GroupRole(commands.Cog):
 
     @permission.autocomplete("role")
     async def _perm_role_ac(self, interaction: discord.Interaction, current: str):
+        return await self._role_choices(interaction, current)
+
+    # ---- /grouprole multi ------------------------------------------------ #
+
+    @grouprole.command(name="multi", description="Turn several permissions on or off for a group role at once.")
+    @app_commands.describe(
+        group_id="A Roblox group bound to this server",
+        role="The group role to change",
+        enabled="On (default) or off",
+    )
+    @require_level(GROUPROLE_MIN_LEVEL)
+    async def multi(self, interaction: discord.Interaction, group_id: int, role: int, enabled: bool = True):
+        await interaction.response.defer()  # public: the reply is the record of the change
+        ctx = await self._context(interaction, group_id, role)
+        if isinstance(ctx, str):
+            return await interaction.edit_original_response(embed=embeds.error_embed("Can't Do That", ctx))
+        role_name, group_name = ctx["role"].get("name"), ctx["group_name"]
+        state = "ON" if enabled else "OFF"
+
+        # 1) pick permissions
+        pick = PickView(interaction.user.id)
+        await interaction.edit_original_response(
+            embed=embeds.info_embed(
+                "Pick Permissions",
+                f"Choose every permission to turn **{state}** for **{role_name}** in **{group_name}**.",
+            ),
+            view=pick,
+        )
+        await pick.wait()
+        if not pick.values:
+            return await interaction.edit_original_response(embed=embeds.info_embed("Nothing Changed", "Timed out."), view=None)
+        keys = [k for k in pick.values if k in PERMISSIONS and PERMISSIONS[k][2] != BLOCKED]
+        if not keys:
+            return await interaction.edit_original_response(embed=embeds.info_embed("Nothing Changed", "No valid permissions picked."), view=None)
+
+        # 2) one confirmation if any sensitive permission is being turned ON
+        if enabled and any(PERMISSIONS[k][2] == SENSITIVE for k in keys):
+            listing = "\n".join(
+                f"- {PERMISSIONS[k][0]}{' *(sensitive)*' if PERMISSIONS[k][2] == SENSITIVE else ''}" for k in keys
+            )
+            confirm = ConfirmView(interaction.user.id)
+            await interaction.edit_original_response(
+                embed=embeds.warning_embed(
+                    "Confirm Permission Changes",
+                    f"Turn **ON** these for **{role_name}** in **{group_name}**?\n\n{listing}\n\n"
+                    f"Everyone holding that role gets these powers in the Roblox group immediately.",
+                ),
+                view=confirm,
+            )
+            await confirm.wait()
+            if confirm.value is not True:
+                reason = "Cancelled." if confirm.value is False else "Timed out."
+                return await interaction.edit_original_response(embed=embeds.info_embed("Nothing Changed", reason), view=None)
+
+        # 3) apply one by one, verifying each
+        await interaction.edit_original_response(
+            embed=embeds.info_embed("Working...", f"Applying {len(keys)} change(s)..."), view=None
+        )
+        done_rows, failed_rows = [], []
+        stopped = False
+        for key in keys:
+            label = PERMISSIONS[key][0]
+            if stopped:
+                failed_rows.append(f"{label} - skipped")
+                continue
+            ok, message = await set_role_permission(ctx["cookie"], group_id, role, key, enabled)
+            if ok:
+                done_rows.append(label)
+            else:
+                failed_rows.append(f"{label} - {message}")
+                if any(h in message for h in _FATAL_HINTS):
+                    stopped = True
+
+        # 4) one summary
+        if not failed_rows:
+            result = embeds.success_embed("Permissions Updated", f"**{len(done_rows)}** permission(s) are now **{state}** for **{role_name}** in **{group_name}**.")
+        elif not done_rows:
+            result = embeds.error_embed("Permissions Not Changed", f"Nothing changed for **{role_name}** in **{group_name}**.")
+        else:
+            result = embeds.warning_embed("Partly Updated", f"Some changes went through for **{role_name}** in **{group_name}**.")
+        if done_rows:
+            result.add_field(name=f"Now {state}", value="\n".join(f"- {r}" for r in done_rows)[:1000], inline=False)
+        if failed_rows:
+            result.add_field(name="Failed", value="\n".join(f"- {r}" for r in failed_rows)[:1000], inline=False)
+        result.add_field(name="Changed by", value=interaction.user.mention, inline=False)
+        await interaction.edit_original_response(embed=result, view=None)
+        if done_rows:
+            await self._log(interaction.guild, result)
+
+    @multi.autocomplete("group_id")
+    async def _multi_group_ac(self, interaction: discord.Interaction, current: str):
+        return await self._group_choices(interaction, current)
+
+    @multi.autocomplete("role")
+    async def _multi_role_ac(self, interaction: discord.Interaction, current: str):
         return await self._role_choices(interaction, current)
 
 
