@@ -61,7 +61,8 @@ COGS = [
     "cogs.economy",
     "cogs.boosterroles",
     "cogs.loa",
-    "cogs.dmannounce"
+    "cogs.dmannounce",
+    "cogs.redeem",
 ]
 
 
