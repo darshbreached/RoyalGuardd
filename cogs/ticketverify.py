@@ -1,25 +1,24 @@
 """
 cogs/ticketverify.py
 ---------------------
-Ticket-style Roblox verification, same flow as the "!verify" systems on other
-British Army servers:
+Ticket-style Roblox verification. There is NO command here: the "Verify via ROBLOX
+Ticket" button on the /panel verification panel calls TicketVerify.start_ticket().
 
-  1. Member presses the Verify button (or types !verify).
-  2. The bot opens a private channel and asks for their ROBLOX username.
+Flow (same as the "!verify" systems on other British Army servers):
+  1. Button press opens a private channel and asks for the ROBLOX username.
      ("cancel" ends it.)
-  3. It shows the account and asks them to reply YES or NO.
-  4. On YES it gives a random word code to paste into their Roblox profile's
+  2. The bot shows the account and asks them to reply YES or NO.
+  3. On YES it gives a random word code to paste into their Roblox profile's
      About section. They have 2 minutes to do it and type "Done".
-  5. The bot reads the public profile, checks the code, links the account with
+  4. The bot reads the public profile, checks the code, links the account with
      db.set_verification(), syncs roles, and closes the channel.
-
-/verifypanel [channel] [category] [staff_role]   (admin level 50)
-    Posts the Verify button panel and remembers the ticket category / staff role.
 
 The profile code proves the person owns the Roblox account, so nobody can verify
 as someone else. A Roblox account already linked to a DIFFERENT Discord member is
 refused (use /forceverify to move it). Already-verified members are told to use
-/update. The bot needs Manage Channels, and Message Content intent for replies.
+/update. The channel is created in the same category as the panel's channel, and
+only the member, the bot and Administrators can see it. The bot needs Manage
+Channels, and Message Content intent for replies.
 Problems are logged as [TICKETVERIFY DEBUG] lines.
 """
 
@@ -29,15 +28,12 @@ import time
 
 import aiohttp
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from database.mongodb import db
 from utils import embeds, roblox
-from utils.permissions import require_level
 from cogs.update import sync_member_roles
 
-PANEL_LEVEL = 50
 PROMPT_TIMEOUT = 120     # seconds to answer the username / YES-NO prompts
 CODE_TIMEOUT = 120       # the two minute limit to paste the code and say Done
 MAX_ATTEMPTS = 3         # username tries before the ticket closes
@@ -59,10 +55,6 @@ WORDS = [
 
 def _debug(message: str):
     print(f"[TICKETVERIFY DEBUG] {message}")
-
-
-def _cfg():
-    return db.db["ticketverify_config"]
 
 
 def _norm(text: str) -> str:
@@ -109,29 +101,22 @@ def make_embed(description: str, footer: str = BRAND_FOOTER, thumbnail: str = No
     return embed
 
 
-class VerifyPanelView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Verify", style=discord.ButtonStyle.success, custom_id="ticketverify:start")
-    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        channel, error = await self.cog.open_ticket(interaction.guild, interaction.user, interaction.channel)
-        if error:
-            return await interaction.followup.send(embed=embeds.error_embed("Can't Verify", error), ephemeral=True)
-        await interaction.followup.send(f"Your verification channel: {channel.mention}", ephemeral=True)
-        self.cog.start_flow(channel, interaction.user)
-
-
 class TicketVerify(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.active = set()
         self._tasks = set()
 
-    async def cog_load(self):
-        self.bot.add_view(VerifyPanelView(self))
+    # ---- entry point for the panel button -------------------------------- #
+
+    async def start_ticket(self, interaction: discord.Interaction):
+        """Use this as the WHOLE callback of the panel's ticket button."""
+        await interaction.response.defer(ephemeral=True)
+        channel, error = await self.open_ticket(interaction.guild, interaction.user, interaction.channel)
+        if error:
+            return await interaction.followup.send(embed=embeds.error_embed("Can't Verify", error), ephemeral=True)
+        await interaction.followup.send(f"Your verification channel: {channel.mention}", ephemeral=True)
+        self.start_flow(channel, interaction.user)
 
     # ---- opening a ticket ------------------------------------------------ #
 
@@ -147,8 +132,6 @@ class TicketVerify(commands.Cog):
                 self.active.discard(member.id)
                 return None, f"You're already verified as **{name}**. Use `/update` to refresh your roles. To change accounts, ask staff."
 
-            cfg = await _cfg().find_one({"guild_id": str(guild.id)}) or {}
-            category = guild.get_channel(int(cfg["category_id"])) if cfg.get("category_id") else getattr(source_channel, "category", None)
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -156,13 +139,12 @@ class TicketVerify(commands.Cog):
                     view_channel=True, send_messages=True, embed_links=True, read_message_history=True, manage_channels=True
                 ),
             }
-            staff_role = guild.get_role(int(cfg["staff_role_id"])) if cfg.get("staff_role_id") else None
-            if staff_role:
-                overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
             slug = "".join(c for c in member.name.lower() if c.isalnum() or c in "-_")[:30] or str(member.id)
             channel = await guild.create_text_channel(
-                f"verify-{slug}", category=category, overwrites=overwrites, reason=f"Verification for {member}"
+                f"verify-{slug}",
+                category=getattr(source_channel, "category", None),
+                overwrites=overwrites,
+                reason=f"Verification for {member}",
             )
             return channel, None
         except discord.Forbidden:
@@ -332,46 +314,6 @@ class TicketVerify(commands.Cog):
                     return
             except Exception:
                 continue
-
-    # ---- triggers -------------------------------------------------------- #
-
-    @commands.command(name="verify")
-    @commands.guild_only()
-    async def verify_prefix(self, ctx: commands.Context):
-        channel, error = await self.open_ticket(ctx.guild, ctx.author, ctx.channel)
-        if error:
-            return await ctx.reply(error, delete_after=15)
-        await ctx.reply(f"Verification opened in {channel.mention}", delete_after=15)
-        self.start_flow(channel, ctx.author)
-
-    @app_commands.command(name="verifypanel", description="Post the Verify button panel.")
-    @app_commands.describe(
-        channel="Where to post the panel (default: here)",
-        category="Category the private verify channels are created in",
-        staff_role="Role that can see every verify channel",
-    )
-    @app_commands.guild_only()
-    @require_level(PANEL_LEVEL)
-    async def verifypanel(self, interaction: discord.Interaction, channel: discord.TextChannel = None,
-                          category: discord.CategoryChannel = None, staff_role: discord.Role = None):
-        await interaction.response.defer(ephemeral=True)
-        target = channel or interaction.channel
-        await _cfg().update_one(
-            {"guild_id": str(interaction.guild.id)},
-            {"$set": {
-                "guild_id": str(interaction.guild.id),
-                "category_id": str(category.id) if category else None,
-                "staff_role_id": str(staff_role.id) if staff_role else None,
-            }},
-            upsert=True,
-        )
-        panel = make_embed(
-            "Press **Verify** below, or type `!verify`, to link your ROBLOX account.\n"
-            "A private channel opens and I'll walk you through it.",
-            title="Verification",
-        )
-        await target.send(embed=panel, view=VerifyPanelView(self))
-        await interaction.followup.send(embed=embeds.success_embed("Panel Posted", f"Panel posted in {target.mention}."), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
