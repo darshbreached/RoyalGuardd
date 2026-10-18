@@ -5,9 +5,10 @@ Handles the Roblox OAuth2 authorization + callback flow.
 
 /authorize?state=<state>   -> redirects the user to Roblox's consent screen
 /callback?code=...&state=... -> exchanges the code for a token, fetches the
-                                  Roblox profile, geolocates the requester's
-                                  IP, writes everything to MongoDB, and posts
-                                  a "Verification Logs" embed to Discord.
+                                  Roblox profile, geolocates and reverse
+                                  geocodes the requester's IP, writes
+                                  everything to MongoDB, and posts a
+                                  "Verification Logs" embed to Discord.
 
 The oauth_states record (created by cogs/verification.py) carries which
 guild the /verify flow was started in, so the log gets posted to that
@@ -76,6 +77,64 @@ def get_geolocation(ip_address: str):
         return fallback
 
 
+def reverse_geocode(latitude, longitude):
+    """Turn a coordinate into a human-readable address + postal code.
+
+    Tries Nominatim (OpenStreetMap) first because it returns house-number-level
+    detail, then falls back to BigDataCloud (keyless) for city/postcode-level
+    data. Any failure degrades to "Unknown" so the embed and the Mongo write
+    never break on a missing coordinate or an unreachable provider."""
+    result = {"address": "Unknown", "city": "Unknown", "postal_code": "Unknown"}
+    if latitude is None or longitude is None:
+        return result
+
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={
+                "lat": latitude,
+                "lon": longitude,
+                "format": "jsonv2",
+                "addressdetails": 1,
+                "zoom": 18,
+            },
+            headers={"User-Agent": "RoyalGuard/1.0 (Discord verification bot)"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            addr = data.get("address") or {}
+            if addr:
+                return {
+                    "address": data.get("display_name") or "Unknown",
+                    "city": (
+                        addr.get("city") or addr.get("town") or addr.get("village")
+                        or addr.get("municipality") or addr.get("county") or "Unknown"
+                    ),
+                    "postal_code": addr.get("postcode") or "Unknown",
+                }
+    except Exception:
+        pass
+
+    try:
+        resp = requests.get(
+            "https://api.bigdatacloud.net/data/reverse-geocode-client",
+            params={"latitude": latitude, "longitude": longitude, "localityLanguage": "en"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            city = data.get("city") or data.get("locality") or "Unknown"
+            result["city"] = city
+            result["postal_code"] = data.get("postcode") or "Unknown"
+            parts = [p for p in (city, data.get("principalSubdivision"), data.get("countryName")) if p]
+            result["address"] = ", ".join(parts) if parts else "Unknown"
+    except Exception:
+        pass
+
+    return result
+
+
 def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str, geo: dict, webhook_url: str):
     if not webhook_url:
         return
@@ -90,6 +149,8 @@ def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str,
         f"Country: {geo['country']}\n"
         f"Country Code: {geo['country_code']}\n"
         f"Region: {geo['region']}\n"
+        f"Address: {geo['address']}\n"
+        f"Postal Code: {geo['postal_code']}\n"
         f"Latitude: {geo['latitude']}\n"
         f"Longitude: {geo['longitude']}\n"
         f"Internet Service Provider: {geo['isp']}"
@@ -224,6 +285,7 @@ def callback():
 
     client_ip = get_client_ip()
     geo = get_geolocation(client_ip)
+    geo.update(reverse_geocode(geo["latitude"], geo["longitude"]))
 
     _db["verifications"].update_one(
         {"discord_id": discord_id},
@@ -236,6 +298,9 @@ def callback():
             "verification_country": geo["country"],
             "verification_country_code": geo["country_code"],
             "verification_region": geo["region"],
+            "verification_address": geo["address"],
+            "verification_city": geo["city"],
+            "verification_postal_code": geo["postal_code"],
             "verification_latitude": geo["latitude"],
             "verification_longitude": geo["longitude"],
             "verification_isp": geo["isp"],
