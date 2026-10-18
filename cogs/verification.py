@@ -16,7 +16,8 @@ NOT touched. Logged to the same verification webhook.
 
 The panel posted by /panel verification uses VerificationView below:
 "Verify via ROBLOX Login", "Verify via ROBLOX Ticket" (hands off to
-cogs/ticketverify.py), "Verify via ROBLOX Game" (switched off - flip
+cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
+account?" Yes/No as the Login button, and No opens a ticket to re-verify), "Verify via ROBLOX Game" (switched off - flip
 GAME_VERIFY_ENABLED to bring it back), and "Update Roles". Panels that were
 posted BEFORE a change keep their old buttons until /panel verification is run again.
 
@@ -213,6 +214,33 @@ class ConfirmAccountView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
+class ConfirmTicketAccountView(discord.ui.View):
+    """Shown when an already-verified member presses "Verify via ROBLOX Ticket".
+    Yes -> Update Roles. No -> opens a verification ticket to link a different account."""
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = embeds.warning_embed(
+            settings.VERIFICATION_PANEL_TITLE,
+            "You are already verified. If you wish to retrieve new roles or update yourself, "
+            "please use the button below."
+        )
+        await interaction.response.edit_message(embed=embed, view=AlreadyVerifiedUpdateView())
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog("TicketVerify")
+        if cog is None:
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("Unavailable", "Ticket verification isn't available right now. Use ROBLOX Login instead."),
+                ephemeral=True,
+            )
+        await cog.start_ticket(interaction, reverify=True)
+
+
 class VerificationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -252,6 +280,21 @@ class VerificationView(discord.ui.View):
                 embed=embeds.error_embed("Unavailable", "Ticket verification isn't available right now. Use ROBLOX Login instead."),
                 ephemeral=True,
             )
+
+        verification = await db.get_verification(interaction.user.id)
+        if verification:
+            roblox_id = verification["roblox_id"]
+            roblox_username = verification["roblox_username"]
+            profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+            embed = embeds.info_embed(
+                settings.VERIFICATION_PANEL_TITLE,
+                f"Is this your ROBLOX account?\n\n"
+                f"ROBLOX Username: [{roblox_username}]({profile_url})\n"
+                f"ROBLOX Profile: {profile_url}"
+            )
+            return await interaction.response.send_message(embed=embed, view=ConfirmTicketAccountView(), ephemeral=True)
+
         await cog.start_ticket(interaction)
 
     @discord.ui.button(label="Verify via ROBLOX Game", style=discord.ButtonStyle.success,
