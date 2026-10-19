@@ -64,6 +64,7 @@ COGS = [
     "cogs.dmannounce",
     "cogs.redeem",
     "cogs.ticketverify",
+    "cogs.emailverify",
 ]
 
 
