@@ -100,7 +100,10 @@ class SetRank(commands.Cog):
             "Rank Updated",
             f"Successfully set the rank of **{verification['roblox_username']}** to **{rank_name}** in **{group_name}**."
         )
-        embed.set_footer(text=f"Set by {interaction.user}")
+        embed.set_footer(
+            text=f"Set by {interaction.user}",
+            icon_url=interaction.user.display_avatar.url,
+        )
         await interaction.followup.send(embed=embed)
 
         log_embed = embeds.info_embed(
