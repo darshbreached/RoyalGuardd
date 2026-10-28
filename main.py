@@ -40,6 +40,7 @@ COGS = [
     "cogs.tickets",
     "cogs.panels",
     "cogs.bgcheck",
+    "cogs.blcheck",
     "cogs.moderation",
     "cogs.setrank",
     "cogs.rankrequest",
