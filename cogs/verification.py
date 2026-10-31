@@ -15,7 +15,8 @@ the Non-Verified role if one is configured. Roles that come from rankbinds are
 NOT touched. Logged to the same verification webhook.
 
 The panel posted by /panel verification uses VerificationView below:
-"Verify via ROBLOX Login", "Verify via ROBLOX Ticket" (hands off to
+"Verify via ROBLOX Login" (switched off - flip OAUTH_LOGIN_ENABLED to bring it
+back), "Verify via ROBLOX Ticket" (hands off to
 cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
 account?" Yes/No as the Login button, and No opens a ticket to re-verify), "Verify via ROBLOX Game" (switched off - flip
 GAME_VERIFY_ENABLED to bring it back), and "Update Roles". Panels that were
@@ -47,6 +48,7 @@ from config import settings
 
 WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
 
+OAUTH_LOGIN_ENABLED = False  # True turns "Verify via ROBLOX Login" back on
 GAME_VERIFY_ENABLED = False  # True turns "Verify via ROBLOX Game" back on
 
 _ALL_TZ_LABELS = all_timezone_labels()
@@ -246,8 +248,18 @@ class VerificationView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Verify via ROBLOX Login", style=discord.ButtonStyle.success,
-                        custom_id="royalguard:verify_login", row=0)
+                        custom_id="royalguard:verify_login", row=0, disabled=not OAUTH_LOGIN_ENABLED)
     async def verify_login(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not OAUTH_LOGIN_ENABLED:
+            # Also covers panels posted before this was switched off.
+            return await interaction.response.send_message(
+                embed=embeds.warning_embed(
+                    "Unavailable",
+                    "Verification through ROBLOX Login is switched off. Use **Verify via ROBLOX Ticket** instead."
+                ),
+                ephemeral=True,
+            )
+
         verification = await db.get_verification(interaction.user.id)
 
         if verification:
