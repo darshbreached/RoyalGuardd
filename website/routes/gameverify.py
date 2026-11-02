@@ -1,28 +1,34 @@
 """
 website/routes/gameverify.py
 ------------------------------
-Endpoint the Roblox game's server-side Script calls to complete
-in-game verification. Protected by a shared secret header (never a
-LocalScript - that source is exploit-readable) since this endpoint can
-link any Discord ID to any Roblox account if called by anyone else.
+Endpoints the Roblox verification game's server-side Script calls.
+Protected by a shared secret header (never a LocalScript - that source is
+exploit-readable) since these endpoints can link any Discord ID to a Roblox
+account if called by anyone else.
 
-The game never sees or needs the Discord ID - it's already stored on the
-oauth_states "gamecode:<code>" record created when the player pressed
-"Verify via ROBLOX Game" in Discord. This endpoint just looks that up by
-the code the player typed in-game.
+Flow:
+  1. In Discord the player presses "Verify via ROBLOX Game" and types their
+     Roblox username. The bot stores a pending request in oauth_states:
+         state = "gamereq:<roblox_id>:<discord_username>:<unix_time>"
+  2. The player joins the game. The game calls /lookup with the joining
+     player's own UserId. If a fresh request exists it shows
+     "IS THIS YOU? <discord_username>  [YES] [NO]".
+  3. YES -> /confirm links the accounts. NO -> /cancel deletes the request.
+  4. The player presses Done in Discord and the bot gives roles.
 
-NOTE ON LOCATION DATA: unlike website/routes/oauth.py, this endpoint does
+NOTE ON LOCATION DATA: unlike website/routes/oauth.py, these endpoints do
 NOT log IP/country/ISP/VPN data. The connecting IP here is Roblox's own
-game-server infrastructure, not the player's real IP - logging it would
-show every single player as being wherever Roblox's servers are, which is
-actively wrong information, not just imprecise.
+game-server infrastructure, not the player's real IP.
 """
 
-import os
-import time
+import hmac
 import logging
-import requests
+import os
+import re
+import time
 from datetime import datetime, timezone
+
+import requests
 from flask import Blueprint, request, jsonify
 from pymongo import MongoClient
 
@@ -35,6 +41,8 @@ FALLBACK_VERIFICATION_WEBHOOK = os.getenv("DISCORD_VERIFICATION_WEBHOOK")
 ROBLOX_USER_API = "https://users.roblox.com/v1/users"
 
 DISCORD_EPOCH_MS = 1420070400000
+REQUEST_TTL_SECONDS = 10 * 60
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 
 _client = MongoClient(os.getenv("MONGODB_URI"))
 _db = _client[os.getenv("MONGODB_DB_NAME", "royalguard")]
@@ -109,44 +117,125 @@ def post_game_verification_log(discord_id: str, roblox_username: str, roblox_id:
         pass
 
 
-@gameverify_bp.route("/api/game-verify", methods=["POST"])
-def game_verify():
+# ---------------------------------------------------------------------- #
+# helpers
+# ---------------------------------------------------------------------- #
+
+def _auth_error():
+    """Returns a (response, status) tuple if the request is not allowed, else None."""
     if not GAME_API_KEY:
         log.error("ROBLOX_GAME_API_KEY is not configured - refusing all game-verify requests.")
         return jsonify({"success": False, "error": "Not configured"}), 500
-
-    provided_key = request.headers.get("X-API-Key")
-    if provided_key != GAME_API_KEY:
+    provided = request.headers.get("X-API-Key") or ""
+    if not hmac.compare_digest(provided.encode(), GAME_API_KEY.encode()):
         return jsonify({"success": False, "error": "Invalid API key"}), 401
+    return None
+
+
+def _roblox_id(data: dict):
+    try:
+        rid = int(data.get("roblox_id"))
+    except (TypeError, ValueError):
+        return None
+    return str(rid) if rid > 0 else None
+
+
+def _pending_pattern(rid: str) -> str:
+    return f"^gamereq:{rid}:"
+
+
+def _newest_request(rid: str):
+    """Newest unexpired request for this Roblox ID: (timestamp, discord_name, doc) or None."""
+    now = time.time()
+    best = None
+    for doc in _db["oauth_states"].find({"state": {"$regex": _pending_pattern(rid)}}):
+        parts = str(doc.get("state", "")).split(":", 3)
+        if len(parts) != 4:
+            continue
+        try:
+            ts = int(parts[3])
+        except ValueError:
+            continue
+        if now - ts > REQUEST_TTL_SECONDS:
+            continue
+        if best is None or ts > best[0]:
+            best = (ts, parts[2], doc)
+    return best
+
+
+def _clear_requests(rid: str):
+    _db["oauth_states"].delete_many({"state": {"$regex": _pending_pattern(rid)}})
+
+
+# ---------------------------------------------------------------------- #
+# endpoints
+# ---------------------------------------------------------------------- #
+
+@gameverify_bp.route("/api/game-verify/lookup", methods=["POST"])
+def game_lookup():
+    err = _auth_error()
+    if err:
+        return err
 
     data = request.get_json(silent=True) or {}
-    code = (data.get("code") or "").strip().upper()
-    roblox_id = data.get("roblox_id")
-    roblox_username = data.get("roblox_username")
+    rid = _roblox_id(data)
+    if not rid:
+        return jsonify({"success": False, "error": "Missing roblox_id"}), 400
 
-    if not code or not roblox_id or not roblox_username:
-        return jsonify({"success": False, "error": "Missing code, roblox_id, or roblox_username"}), 400
+    found = _newest_request(rid)
+    if not found:
+        return jsonify({"success": True, "found": False})
+    return jsonify({"success": True, "found": True, "discord_name": found[1]})
 
-    state_doc = _db["oauth_states"].find_one({"state": f"gamecode:{code}"})
-    if not state_doc:
-        return jsonify({"success": False, "error": "Invalid or expired code"}), 404
 
-    discord_id = state_doc["discord_id"]
-    guild_id = state_doc.get("guild_id")
+@gameverify_bp.route("/api/game-verify/cancel", methods=["POST"])
+def game_cancel():
+    err = _auth_error()
+    if err:
+        return err
 
-    existing_link = _db["verifications"].find_one({"roblox_id": str(roblox_id)})
+    data = request.get_json(silent=True) or {}
+    rid = _roblox_id(data)
+    if not rid:
+        return jsonify({"success": False, "error": "Missing roblox_id"}), 400
+
+    _clear_requests(rid)
+    return jsonify({"success": True})
+
+
+@gameverify_bp.route("/api/game-verify/confirm", methods=["POST"])
+def game_confirm():
+    err = _auth_error()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    rid = _roblox_id(data)
+    roblox_username = str(data.get("roblox_username") or "").strip()
+    if not rid or not USERNAME_RE.match(roblox_username):
+        return jsonify({"success": False, "error": "Missing or invalid roblox_id / roblox_username"}), 400
+
+    found = _newest_request(rid)
+    if not found:
+        return jsonify({"success": False, "error": "No pending request (it may have expired)"}), 404
+
+    doc = found[2]
+    discord_id = doc["discord_id"]
+    guild_id = doc.get("guild_id")
+
+    existing_link = _db["verifications"].find_one({"roblox_id": rid})
     prior_discord_id = None
     if existing_link and existing_link.get("discord_id") != discord_id:
         prior_discord_id = existing_link["discord_id"]
 
     discord_age = get_discord_account_age(discord_id)
-    roblox_age = get_roblox_account_age(str(roblox_id))
+    roblox_age = get_roblox_account_age(rid)
 
     _db["verifications"].update_one(
         {"discord_id": discord_id},
         {"$set": {
             "discord_id": discord_id,
-            "roblox_id": str(roblox_id),
+            "roblox_id": rid,
             "roblox_username": roblox_username,
             "verified_at": time.time(),
             "verification_method": "roblox_game",
@@ -162,7 +251,7 @@ def game_verify():
 
         _db["verification_events"].insert_one({
             "discord_id": discord_id,
-            "roblox_id": str(roblox_id),
+            "roblox_id": rid,
             "roblox_username": roblox_username,
             "guild_id": guild_id,
             "ip": None,
@@ -171,10 +260,10 @@ def game_verify():
         })
 
     post_game_verification_log(
-        discord_id, roblox_username, str(roblox_id), webhook_url,
+        discord_id, roblox_username, rid, webhook_url,
         discord_age, roblox_age, prior_discord_id=prior_discord_id,
     )
 
-    _db["oauth_states"].delete_one({"state": f"gamecode:{code}"})
+    _clear_requests(rid)
 
     return jsonify({"success": True, "roblox_username": roblox_username})

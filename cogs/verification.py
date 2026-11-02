@@ -18,9 +18,15 @@ The panel posted by /panel verification uses VerificationView below:
 "Verify via ROBLOX Login" (switched off - flip OAUTH_LOGIN_ENABLED to bring it
 back), "Verify via ROBLOX Ticket" (hands off to
 cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
-account?" Yes/No as the Login button, and No opens a ticket to re-verify), "Verify via ROBLOX Game" (switched off - flip
-GAME_VERIFY_ENABLED to bring it back), and "Update Roles". Panels that were
+account?" Yes/No as the Login button, and No opens a ticket to re-verify),
+"Verify via ROBLOX Game" and "Update Roles". Panels that were
 posted BEFORE a change keep their old buttons until /panel verification is run again.
+
+"Verify via ROBLOX Game": the member types their Roblox username in a popup,
+gets the game link + a Done button, joins the game on that account, confirms
+"IS THIS YOU?" there, is kicked with a message, then presses Done here.
+The button is only enabled when ROBLOX_VERIFY_GAME_URL is set (Railway env var
+on the bot services). The game talks to website/routes/gameverify.py.
 
 Every "sync roles" action (the Update Roles buttons and /forceverify) also
 assigns a timezone role based on the country/region captured during
@@ -31,6 +37,8 @@ extra_roles - if the guild hasn't created that role, it's silently skipped.
 """
 
 import os
+import re
+import time
 import aiohttp
 import discord
 from discord import app_commands
@@ -48,8 +56,11 @@ from config import settings
 
 WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.railway.app")
 
+GAME_URL = os.getenv("ROBLOX_VERIFY_GAME_URL", "").strip()
+
 OAUTH_LOGIN_ENABLED = False  # True turns "Verify via ROBLOX Login" back on
-GAME_VERIFY_ENABLED = False  # True turns "Verify via ROBLOX Game" back on
+GAME_VERIFY_ENABLED = bool(GAME_URL)  # on automatically once ROBLOX_VERIFY_GAME_URL is set
+print(f"[VERIFICATION] game url set: {bool(GAME_URL)}")
 
 _ALL_TZ_LABELS = all_timezone_labels()
 
@@ -191,6 +202,132 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
         await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
 
 
+class GameDoneView(discord.ui.View):
+    """Shown with the game link. Done = 'I confirmed in the game, finish verifying me.'"""
+
+    def __init__(self, roblox_id: int, roblox_username: str):
+        super().__init__(timeout=600)
+        self.roblox_id = roblox_id
+        self.roblox_username = roblox_username
+
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        verification = await db.get_verification(interaction.user.id)
+        if not verification or str(verification.get("roblox_id")) != str(self.roblox_id):
+            return await interaction.followup.send(
+                embed=embeds.warning_embed(
+                    "Not Verified Yet",
+                    "I haven't seen you confirm in the game yet.\n\n"
+                    "Join the game on **" + self.roblox_username + "**, press **YES** when it asks "
+                    "\"Is this you?\", then press **Done** again."
+                ),
+                ephemeral=True,
+            )
+
+        try:
+            added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
+        except RobloxAPIError:
+            return await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Roblox Temporarily Unavailable",
+                    "You're verified, but Roblox's API didn't respond just now so no roles were changed. "
+                    "Press **Update Roles** on the panel in a minute."
+                ),
+                ephemeral=True,
+            )
+
+        desc = f"You are now verified as **{self.roblox_username}**."
+        if added:
+            desc += f"\n**Added:** {', '.join(added)}"
+        if removed:
+            desc += f"\n**Removed:** {', '.join(removed)}"
+
+        await interaction.followup.send(embed=embeds.success_embed("Verified", desc), ephemeral=True)
+        try:
+            await interaction.edit_original_response(view=None)
+        except Exception:
+            pass
+        self.stop()
+
+
+class GameUsernameModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title=str(settings.VERIFICATION_PANEL_TITLE)[:45])
+        self.username = discord.ui.TextInput(
+            label="Please enter your ROBLOX username",
+            placeholder="Only enter your ROBLOX username, e.g. Roblox",
+            min_length=3,
+            max_length=20,
+            required=True,
+        )
+        self.add_item(self.username)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        name = self.username.value.strip()
+
+        try:
+            roblox_user = await roblox.get_user_by_username(name)
+        except Exception:
+            roblox_user = None
+
+        if not roblox_user or not roblox_user.get("id"):
+            return await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Roblox User Not Found",
+                    f"Could not find a Roblox account named `{name}`. Check the spelling and try again."
+                ),
+                ephemeral=True,
+            )
+
+        roblox_id = int(roblox_user["id"])
+        roblox_username = roblox_user.get("name") or name
+        profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+        # Discord usernames only contain a-z 0-9 _ . so this is safe inside the state key.
+        discord_name = re.sub(r"[^a-z0-9_.]", "", interaction.user.name.lower()) or "user"
+        await db.create_oauth_state(
+            f"gamereq:{roblox_id}:{discord_name}:{int(time.time())}",
+            interaction.user.id,
+            interaction.guild.id,
+        )
+
+        embed = embeds.info_embed(
+            settings.VERIFICATION_PANEL_TITLE,
+            f"Please join this game to complete verification.\n\n"
+            f"{GAME_URL}\n\n"
+            f"Join as **[{roblox_username}]({profile_url})**. When the game asks "
+            f"\"Is this you?\", press **YES**.\n\n"
+            f"Click on the button below once you have successfully verified in the game.\n"
+            f"This request expires in **10 minutes**."
+        )
+        embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed, view=GameDoneView(roblox_id, roblox_username), ephemeral=True)
+
+
+class ConfirmGameAccountView(discord.ui.View):
+    """Shown when an already-verified member presses "Verify via ROBLOX Game".
+    Yes -> Update Roles. No -> the username popup, to link a different account."""
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = embeds.warning_embed(
+            settings.VERIFICATION_PANEL_TITLE,
+            "You are already verified. If you wish to retrieve new roles or update yourself, "
+            "please use the button below."
+        )
+        await interaction.response.edit_message(embed=embed, view=AlreadyVerifiedUpdateView())
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GameUsernameModal())
+
+
 class ConfirmAccountView(discord.ui.View):
     def __init__(self, roblox_username: str, roblox_id: str):
         super().__init__(timeout=180)
@@ -313,24 +450,30 @@ class VerificationView(discord.ui.View):
                         custom_id="royalguard:verify_game", row=1, disabled=not GAME_VERIFY_ENABLED)
     async def verify_game(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not GAME_VERIFY_ENABLED:
-            # Also covers panels posted before this was switched off.
+            # Also covers panels posted before the game was set up.
             return await interaction.response.send_message(
                 embed=embeds.warning_embed(
                     "Unavailable",
-                    "Verification through the ROBLOX game is switched off. Use **Verify via ROBLOX Login** or **Verify via ROBLOX Ticket** instead."
+                    "Verification through the ROBLOX game isn't set up yet. Use **Verify via ROBLOX Ticket** instead."
                 ),
                 ephemeral=True,
             )
 
-        code = secrets.token_hex(3).upper()
-        await db.create_oauth_state(f"gamecode:{code}", interaction.user.id, interaction.guild.id)
+        verification = await db.get_verification(interaction.user.id)
+        if verification:
+            roblox_id = verification["roblox_id"]
+            roblox_username = verification["roblox_username"]
+            profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
 
-        embed = embeds.info_embed(
-            "Verify via ROBLOX Game",
-            f"Join the verification game and enter this code when prompted:\n\n"
-            f"**`{code}`**\n\nThis code expires in 2 minutes."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = embeds.info_embed(
+                settings.VERIFICATION_PANEL_TITLE,
+                f"Is this your ROBLOX account?\n\n"
+                f"ROBLOX Username: [{roblox_username}]({profile_url})\n"
+                f"ROBLOX Profile: {profile_url}"
+            )
+            return await interaction.response.send_message(embed=embed, view=ConfirmGameAccountView(), ephemeral=True)
+
+        await interaction.response.send_modal(GameUsernameModal())
 
     @discord.ui.button(label="Update Roles", style=discord.ButtonStyle.success,
                         custom_id="royalguard:update_roles", row=1)
