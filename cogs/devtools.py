@@ -1,3 +1,4 @@
+cat > cogs/devtools.py << 'PYEOF'
 """
 cogs/devtools.py
 ------------------
@@ -25,19 +26,35 @@ are bot-wide operations that shouldn't be grantable by a server admin.
                  with the `collection` option if a full dump is too large.
 /dev guilds    - list every server the bot is in, with an invite link for each
 /dev shutdown  - gracefully stop the bot (with a confirm button)
-!leave         - prefix command that makes the bot leave a server
-!eval          - prefix command that executes arbitrary async Python.
-                 Owner-only, but genuinely dangerous - if the bot token or
-                 your Discord account is ever compromised, this becomes a
-                 full remote-code-execution backdoor into wherever the bot
-                 is hosted (reads env vars/secrets, touches the filesystem,
-                 etc). Keep this bot's token and your own account secured
-                 accordingly (2FA, no sharing the token, no pasting it
-                 anywhere public).
+
+Prefix commands (all owner-only):
+!leave [id]            - make the bot leave a server
+!eval <code>           - execute arbitrary async Python. A single expression
+                         is auto-returned, so `!eval len(bot.guilds)` works.
+                         Long output is sent as a file.
+!again                 - re-run the last !eval / !timeit code
+!timeit <code>         - run code once and report how long it took
+!inspect <expr>        - evaluate an expression, show its type, repr and
+                         public attributes
+!sh <command>          - run a shell command on the host (60s timeout)
+!mongo <coll> [filter] - read-only find() on a collection, first 10 docs.
+                         Filter is JSON, e.g. !mongo warnings {"guild_id": 123}
+!source <command>      - send the source code of a prefix or slash command
+!load / !unload <cog>  - load or unload an extension, e.g. cogs.rankbinds
+!reload <cog>          - prefix version of /dev reload
+
+!eval and !sh are genuinely dangerous - owner-only, but if the bot token or
+your Discord account is ever compromised, they become a full remote-code-
+execution backdoor into wherever the bot is hosted (reads env vars/secrets,
+touches the filesystem, etc). Keep this bot's token and your own account
+secured accordingly (2FA, no sharing the token, no pasting it anywhere
+public). Never run !eval / !sh / !mongo output through a channel other
+people can read - it can contain secrets and PII.
 """
 
 import asyncio
 import contextlib
+import inspect
 import io
 import json
 import textwrap
@@ -61,6 +78,31 @@ async def _is_owner_check(interaction: discord.Interaction) -> bool:
 
 INVITE_TTL_SECONDS = 3600
 _invite_cache = {}  # guild_id -> (url, expires_at)
+
+MAX_INLINE = 1900
+SHELL_TIMEOUT = 60
+
+
+def _clean_code(body: str) -> str:
+    body = body.strip()
+    if body.startswith("```") and body.endswith("```"):
+        body = "\n".join(body.split("\n")[1:-1])
+    return body.strip("`\n ")
+
+
+def _defang(text: str) -> str:
+    """Stop output containing ``` from breaking out of our code fence."""
+    return text.replace("```", "`\u200b``")
+
+
+async def _send_output(ctx: commands.Context, text: str, lang: str = "py", filename: str = "output.txt"):
+    """Send as a code block, or as a file if it won't fit in one message."""
+    if not text:
+        text = "(no output)"
+    if len(text) <= MAX_INLINE:
+        return await ctx.send(f"```{lang}\n{_defang(text)}\n```")
+    file = discord.File(io.BytesIO(text.encode("utf-8")), filename=filename)
+    return await ctx.send(f"Output was {len(text)} chars, sent as a file.", file=file)
 
 
 async def _guild_invite(guild: discord.Guild) -> str:
@@ -137,6 +179,7 @@ class DevTools(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._last_eval_result = None
+        self._last_code = None
         self.group = DevGroup()
 
         self.group.add_command(
@@ -335,6 +378,10 @@ class DevTools(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, view=ShutdownConfirmView(interaction.user.id), ephemeral=True)
 
+    # ------------------------------------------------------------------
+    # Prefix commands
+    # ------------------------------------------------------------------
+
     @commands.command(name="leave")
     @commands.is_owner()
     async def leave(self, ctx: commands.Context, guild_id: int = None):
@@ -370,14 +417,11 @@ class DevTools(commands.Cog):
         await guild.leave()
         await ctx.send(f"Left **{name}** (`{gid}`).")
 
-    @commands.command(name="eval")
-    @commands.is_owner()
-    async def eval_cmd(self, ctx: commands.Context, *, body: str):
-        """!eval <code> - owner-only. Executes arbitrary async Python.
-        `body` is wrapped in an async function so top-level `await` works,
-        e.g. `!eval await ctx.guild.leave()`. Has access to ctx, bot,
-        discord, commands, guild, channel, author, and `_` (the last
-        eval's return value)."""
+    # ------------------------------------------------------------------
+    # Eval family
+    # ------------------------------------------------------------------
+
+    def _eval_env(self, ctx: commands.Context) -> dict:
         env = {
             "bot": self.bot,
             "ctx": ctx,
@@ -389,38 +433,219 @@ class DevTools(commands.Cog):
             "_": self._last_eval_result,
         }
         env.update(globals())
+        return env
 
-        body = body.strip()
-        if body.startswith("```") and body.endswith("```"):
-            body = "\n".join(body.split("\n")[1:-1])
-        body = body.strip("`\n ")
+    async def _execute(self, ctx: commands.Context, body: str):
+        """Compile and run `body` as an async function.
+
+        Returns (status, ret, stdout, error_text) where status is one of
+        "compile_error", "runtime_error", "ok". A single-line body is first
+        tried as `return (<body>)` so bare expressions auto-return."""
+        env = self._eval_env(ctx)
+        func = None
+
+        if "\n" not in body:
+            try:
+                exec("async def __eval_func__():\n    return (" + body + "\n    )", env)
+                func = env["__eval_func__"]
+            except SyntaxError:
+                func = None
+
+        if func is None:
+            to_compile = "async def __eval_func__():\n" + textwrap.indent(body, "    ")
+            try:
+                exec(to_compile, env)
+            except Exception as e:
+                return "compile_error", None, "", f"{e.__class__.__name__}: {e}"
+            func = env["__eval_func__"]
 
         stdout = io.StringIO()
-        to_compile = "async def __eval_func__():\n" + textwrap.indent(body, "    ")
-
-        try:
-            exec(to_compile, env)
-        except Exception as e:
-            return await ctx.send(f"```py\n{e.__class__.__name__}: {e}\n```")
-
-        func = env["__eval_func__"]
         try:
             with contextlib.redirect_stdout(stdout):
                 ret = await func()
         except Exception:
-            value = stdout.getvalue()
-            await ctx.send(f"```py\n{value}{traceback.format_exc()}\n```"[:2000])
-        else:
-            value = stdout.getvalue()
-            if ret is None:
-                if value:
-                    await ctx.send(f"```py\n{value}\n```"[:2000])
-                else:
-                    await ctx.message.add_reaction("\u2705")
-            else:
-                self._last_eval_result = ret
-                await ctx.send(f"```py\n{value}{ret}\n```"[:2000])
+            return "runtime_error", None, stdout.getvalue(), traceback.format_exc()
+        return "ok", ret, stdout.getvalue(), ""
+
+    async def _run_and_report(self, ctx: commands.Context, body: str, *, timed: bool = False):
+        self._last_code = body
+        start = time.perf_counter()
+        status, ret, out, err = await self._execute(ctx, body)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        if status == "compile_error":
+            return await _send_output(ctx, err, filename="error.txt")
+        if status == "runtime_error":
+            return await _send_output(ctx, f"{out}{err}", filename="error.txt")
+
+        if ret is not None:
+            self._last_eval_result = ret
+
+        if timed:
+            text = f"{out}{ret if ret is not None else ''}".rstrip()
+            footer = f"[ran in {elapsed_ms:.2f}ms]"
+            return await _send_output(ctx, f"{text}\n{footer}" if text else footer, filename="output.txt")
+
+        if ret is None:
+            if out:
+                return await _send_output(ctx, out, filename="output.txt")
+            return await ctx.message.add_reaction("\u2705")
+        return await _send_output(ctx, f"{out}{ret}", filename="output.txt")
+
+    @commands.command(name="eval")
+    @commands.is_owner()
+    async def eval_cmd(self, ctx: commands.Context, *, body: str):
+        """!eval <code> - owner-only. Executes arbitrary async Python.
+        `body` is wrapped in an async function so top-level `await` works,
+        e.g. `!eval await ctx.guild.leave()`. A single expression is
+        returned automatically (`!eval len(bot.guilds)`); for multi-line
+        code use `return` yourself. Has access to ctx, bot, discord,
+        commands, guild, channel, author, and `_` (the last eval's return
+        value)."""
+        await self._run_and_report(ctx, _clean_code(body))
+
+    @commands.command(name="again", aliases=["reeval"])
+    @commands.is_owner()
+    async def again_cmd(self, ctx: commands.Context):
+        """!again - re-runs the last !eval / !timeit code."""
+        if not self._last_code:
+            return await ctx.send("Nothing to re-run yet.")
+        await self._run_and_report(ctx, self._last_code)
+
+    @commands.command(name="timeit")
+    @commands.is_owner()
+    async def timeit_cmd(self, ctx: commands.Context, *, body: str):
+        """!timeit <code> - runs the code once and reports how long it took."""
+        await self._run_and_report(ctx, _clean_code(body), timed=True)
+
+    @commands.command(name="inspect", aliases=["ins"])
+    @commands.is_owner()
+    async def inspect_cmd(self, ctx: commands.Context, *, expr: str):
+        """!inspect <expr> - evaluates an expression and shows its type,
+        repr and public attributes. e.g. `!inspect ctx.guild`."""
+        expr = _clean_code(expr)
+        status, ret, out, err = await self._execute(ctx, expr)
+        if status != "ok":
+            return await _send_output(ctx, f"{out}{err}", filename="error.txt")
+
+        self._last_eval_result = ret
+        attrs = sorted(a for a in dir(ret) if not a.startswith("_"))
+        lines = [
+            f"type : {type(ret).__module__}.{type(ret).__qualname__}",
+            f"repr : {repr(ret)[:500]}",
+        ]
+        doc = inspect.getdoc(ret)
+        if doc:
+            lines.append(f"doc  : {doc.splitlines()[0][:200]}")
+        lines.append(f"attrs ({len(attrs)}):")
+        lines.append(textwrap.fill(", ".join(attrs), width=100) if attrs else "(none)")
+        await _send_output(ctx, "\n".join(lines), lang="yaml", filename="inspect.txt")
+
+    @commands.command(name="sh", aliases=["shell"])
+    @commands.is_owner()
+    async def sh_cmd(self, ctx: commands.Context, *, command: str):
+        """!sh <command> - runs a shell command on the host and returns
+        stdout + stderr. Killed after 60 seconds."""
+        command = _clean_code(command)
+        async with ctx.typing():
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                raw, _ = await asyncio.wait_for(proc.communicate(), timeout=SHELL_TIMEOUT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return await ctx.send(f"Timed out after {SHELL_TIMEOUT}s and was killed.")
+
+        text = raw.decode("utf-8", errors="replace").rstrip()
+        footer = f"[exit {proc.returncode}]"
+        await _send_output(ctx, f"{text}\n{footer}" if text else footer, lang="sh", filename="shell.txt")
+
+    @commands.command(name="mongo")
+    @commands.is_owner()
+    async def mongo_cmd(self, ctx: commands.Context, collection: str, *, query: str = "{}"):
+        """!mongo <collection> [json filter] - read-only find(), returns the
+        first 10 matching documents plus a total count. e.g.
+        `!mongo warnings {"guild_id": 123456789}`. This can contain PII -
+        only run it somewhere private."""
+        try:
+            filt = json.loads(_clean_code(query) or "{}")
+            if not isinstance(filt, dict):
+                raise ValueError("filter must be a JSON object")
+        except Exception as e:
+            return await ctx.send(f"Bad filter: `{type(e).__name__}: {e}`")
+
+        try:
+            coll = db.db[collection]
+            total = await coll.count_documents(filt)
+            docs = await coll.find(filt).limit(10).to_list(length=10)
+        except Exception as e:
+            return await _send_output(ctx, f"{type(e).__name__}: {e}", filename="error.txt")
+
+        text = json.dumps(docs, indent=2, default=str)
+        header = f"// {total} match(es), showing {len(docs)}\n"
+        await _send_output(ctx, header + text, lang="json", filename=f"{collection}_query.json")
+
+    @commands.command(name="source", aliases=["src"])
+    @commands.is_owner()
+    async def source_cmd(self, ctx: commands.Context, *, name: str):
+        """!source <command> - shows the source of a prefix command
+        (`!source eval`) or slash command (`!source dev sync`)."""
+        name = name.strip().lstrip("!/")
+        cmd = self.bot.get_command(name)
+        callback = cmd.callback if cmd else None
+
+        if callback is None:
+            parts = name.split()
+            slash = self.bot.tree.get_command(parts[0])
+            for part in parts[1:]:
+                slash = slash.get_command(part) if slash and hasattr(slash, "get_command") else None
+            callback = getattr(slash, "callback", None)
+
+        if callback is None:
+            return await ctx.send(f"No command named `{name}`.")
+
+        try:
+            src = inspect.getsource(callback)
+        except (OSError, TypeError) as e:
+            return await ctx.send(f"Couldn't get source: `{type(e).__name__}: {e}`")
+        await _send_output(ctx, textwrap.dedent(src), filename=f"{name.replace(' ', '_')}.py")
+
+    # ------------------------------------------------------------------
+    # Extension management
+    # ------------------------------------------------------------------
+
+    async def _ext_action(self, ctx: commands.Context, action: str, cog: str):
+        fn = getattr(self.bot, f"{action}_extension")
+        try:
+            await fn(cog)
+        except Exception as e:
+            return await _send_output(ctx, f"{type(e).__name__}: {e}", filename="error.txt")
+        await ctx.message.add_reaction("\u2705")
+
+    @commands.command(name="load")
+    @commands.is_owner()
+    async def load_cmd(self, ctx: commands.Context, cog: str):
+        """!load <cog> - load an extension, e.g. `!load cogs.rankbinds`."""
+        await self._ext_action(ctx, "load", cog)
+
+    @commands.command(name="unload")
+    @commands.is_owner()
+    async def unload_cmd(self, ctx: commands.Context, cog: str):
+        """!unload <cog> - unload an extension. Don't unload cogs.devtools
+        itself unless you can reload it some other way."""
+        await self._ext_action(ctx, "unload", cog)
+
+    @commands.command(name="reload")
+    @commands.is_owner()
+    async def reload_cmd(self, ctx: commands.Context, cog: str):
+        """!reload <cog> - prefix version of /dev reload."""
+        await self._ext_action(ctx, "reload", cog)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DevTools(bot))
+PYEOF
