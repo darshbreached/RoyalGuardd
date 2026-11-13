@@ -1,4 +1,3 @@
-cat > cogs/devtools.py << 'PYEOF'
 """
 cogs/devtools.py
 ------------------
@@ -648,4 +647,3 @@ class DevTools(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DevTools(bot))
-PYEOF
