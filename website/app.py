@@ -1,10 +1,10 @@
 """
 website/app.py
 ---------------
-Flask backend that hosts the Roblox OAuth2 verification flow. Deployed
-as a separate Railway service (or the "web" process type) alongside the
-bot's "worker" process. Both share the same MongoDB Atlas cluster, so
-verification data written here is instantly visible to the bot.
+Flask backend that hosts the Royal Guard website and the Roblox OAuth2
+verification flow. Deployed as a separate Railway service (the "web"
+process type) alongside the bot's "worker" process. Both share the same
+MongoDB Atlas cluster.
 """
 import os
 from flask import Flask, render_template
@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("WEBSITE_SECRET_KEY", "dev-secret-change-me")
+from website.routes.site import site_bp
+app.register_blueprint(site_bp)
 from website.routes.oauth import oauth_bp
 app.register_blueprint(oauth_bp)
 from website.routes.tenant import tenant_bp
@@ -20,7 +22,7 @@ from website.routes.appeal import appeal_bp
 app.register_blueprint(appeal_bp)
 from website.routes.gameverify import gameverify_bp
 app.register_blueprint(gameverify_bp)
-@app.route("/")
+@app.route("/servers")
 def index():
     from website.servers import get_listing
     return render_template("index.html", **get_listing())
