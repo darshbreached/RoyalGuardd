@@ -12,8 +12,15 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("WEBSITE_SECRET_KEY", "dev-secret-change-me")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.getenv("RAILWAY_ENVIRONMENT")),
+)
 from website.routes.site import site_bp
 app.register_blueprint(site_bp)
+from website.routes.dashboard import dash_bp
+app.register_blueprint(dash_bp)
 from website.routes.oauth import oauth_bp
 app.register_blueprint(oauth_bp)
 from website.routes.tenant import tenant_bp

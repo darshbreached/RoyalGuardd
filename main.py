@@ -66,6 +66,7 @@ COGS = [
     "cogs.redeem",
     "cogs.ticketverify",
     "cogs.emailverify",
+    "cogs.modulegate",
 ]
 
 
