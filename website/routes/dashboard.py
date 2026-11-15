@@ -72,6 +72,33 @@ def bot_in_guild(gid):
     return ok
 
 
+_TENANT_CACHE = {}
+
+
+def tenant_guild_ids(uid):
+    """Server IDs where one of this user's own tenant bots is present."""
+    if DEMO:
+        return set()
+    hit = _TENANT_CACHE.get(uid)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    ids = set()
+    try:
+        from utils.token_crypto import decrypt_token
+        for t in _db["tenants"].find({"owner_discord_id": uid, "status": "active"}):
+            try:
+                r = requests.get("https://discord.com/api/v10/users/@me/guilds?limit=200",
+                                 headers={"Authorization": f"Bot {decrypt_token(t['encrypted_token'])}"}, timeout=5)
+                if r.status_code == 200:
+                    ids.update(g["id"] for g in r.json())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _TENANT_CACHE[uid] = (time.time() + 60, ids)
+    return ids
+
+
 def current_user():
     if DEMO:
         return DEMO_USER
@@ -174,9 +201,10 @@ def servers():
     if not user:
         return render_template("rg_dash.html", view="login", configured=configured(), invite_url=invite_url())
     inv = invite_url()
+    mine = tenant_guild_ids(int(user["discord_id"]))
     guilds = []
     for g in user["guilds"]:
-        has = bot_in_guild(g["id"])
+        has = g["id"] in mine or bot_in_guild(g["id"])
         link = inv if inv == "#" else f"{inv}&guild_id={g['id']}&disable_guild_select=true"
         guilds.append({**g, "bot": has, "invite": link})
     return render_template("rg_dash.html", view="list", guilds=guilds, user=user, demo=DEMO, invite_url=inv)
@@ -188,7 +216,7 @@ def server(gid):
     if not user:
         return redirect("/dashboard/")
     guild = next((g for g in user["guilds"] if g["id"] == gid), None)
-    if not guild or not bot_in_guild(gid):
+    if not guild or not (gid in tenant_guild_ids(int(user["discord_id"])) or bot_in_guild(gid)):
         abort(404)
     grouped = {c: [m for m in TOGGLEABLE.values() if m["category"] == c] for c in CATEGORIES}
     return render_template("rg_dash.html", view="server", guild=guild, grouped=grouped, s=load_settings(gid),
