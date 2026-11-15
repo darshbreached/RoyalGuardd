@@ -1,0 +1,76 @@
+{% extends "rg_base.html" %}
+{% block title %}My bots | Royal Guard{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/rg-dash.css') }}">
+<style>
+.bcard { display: flex; align-items: center; gap: 14px; padding: 16px 18px; background: var(--s1); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.bcard .nm { flex: 1; min-width: 180px; } .bcard b { display: block; } .bcard small { color: var(--rg-muted); }
+.st { font: 500 .66rem var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 3px 9px; border-radius: 3px; border: 1px solid var(--gline); color: var(--rg-gold); }
+.st.bad { color: #ff8a80; border-color: rgba(255, 138, 128, .4); }
+.bbtn { background: none; border: 1px solid rgba(255, 255, 255, .2); color: var(--rg-text); border-radius: 4px; padding: 7px 14px; font: 600 .8rem var(--body); text-decoration: none; }
+.bbtn.danger:hover { border-color: #ff8a80; color: #ff8a80; }
+.addbox { margin-top: 34px; padding: 28px; }
+.addbox h3 { font-size: 1.5rem; margin-bottom: 12px; }
+.addbox ol { color: var(--rg-muted); font-size: .9rem; padding-left: 18px; margin: 0 0 22px; } .addbox li { margin-bottom: 5px; }
+.msg { margin-top: 14px; font-size: .9rem; min-height: 1.2em; } .msg.bad { color: #ff8a80; }
+</style>{% endblock %}
+{% block content %}
+<div class="dwrap">
+  <div class="kicker"><i></i>Dashboard</div>
+  <h1>My bots</h1>
+  <p class="sub">Run Royal Guard under your own bot name and avatar. Your token is encrypted and never shown again.</p>
+  {% if demo %}<div class="demo">Demo mode &middot; nothing is saved to the database</div>{% endif %}
+  <div class="dtabs"><a class="dtab" href="/dashboard/" style="text-decoration:none">Servers</a><a class="dtab on" href="/dashboard/bots/" style="text-decoration:none">My bots</a></div>
+
+  {% for b in bots %}
+  <div class="bcard">
+    <div class="nm"><b>{{ b.name }}</b><small>{% if b.created %}Added {{ b.created }}{% endif %}{% if b.error %} &middot; {{ b.error }}{% endif %}</small></div>
+    <span class="st{% if b.error or b.status != 'active' %} bad{% endif %}">{{ 'Error' if b.error else b.status }}</span>
+    {% if b.invite %}<a class="bbtn" href="{{ b.invite }}" target="_blank" rel="noopener">Invite</a>{% endif %}
+    <button class="bbtn danger" data-rm="{{ b.id }}">Remove</button>
+  </div>
+  {% endfor %}
+  {% if not bots %}<p class="sub">You haven't added a bot yet.</p>{% endif %}
+
+  {% if bots|length < max_bots %}
+  <div class="frame addbox">
+    <h3>Add a bot</h3>
+    <ol>
+      <li>Open the <b>Discord Developer Portal</b>, create an application, then go to <b>Bot</b>.</li>
+      <li>Turn on <b>Server Members Intent</b> and <b>Message Content Intent</b>.</li>
+      <li>Click <b>Reset Token</b>, copy it and paste it below.</li>
+    </ol>
+    <label class="lbl" for="tok">Bot token</label>
+    <input class="dsearch" style="max-width:none;margin-bottom:18px" type="password" id="tok" autocomplete="off" placeholder="Paste your bot token">
+    <label class="lbl" for="bn">Display name (optional)</label>
+    <input class="dsearch" style="max-width:none;margin-bottom:20px" type="text" id="bn" maxlength="100" placeholder="Defaults to your bot's name">
+    <button class="rg-btn" id="addBtn">Add bot</button>
+    <div class="msg" id="msg"></div>
+  </div>
+  {% else %}<p class="sub">You've reached the limit of {{ max_bots }} bots.</p>{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  function post(url, body) {
+    return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then(function (r) { return r.json(); });
+  }
+  var btn = document.getElementById('addBtn'), msg = document.getElementById('msg');
+  if (btn) btn.addEventListener('click', function () {
+    var tok = document.getElementById('tok');
+    msg.className = 'msg'; msg.textContent = 'Checking token...'; btn.disabled = true;
+    post('/dashboard/bots/api/add', {token: tok.value, name: document.getElementById('bn').value})
+      .then(function (d) {
+        if (d.ok) { tok.value = ''; location.reload(); return; }
+        msg.className = 'msg bad'; msg.textContent = d.error || 'Something went wrong'; btn.disabled = false;
+      }).catch(function () { msg.className = 'msg bad'; msg.textContent = 'Could not reach the server'; btn.disabled = false; });
+  });
+  document.querySelectorAll('[data-rm]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('Remove this bot? Its token will be deleted from Royal Guard.')) return;
+      post('/dashboard/bots/api/remove', {id: b.dataset.rm}).then(function () { location.reload(); });
+    });
+  });
+})();
+</script>
+{% endblock %}

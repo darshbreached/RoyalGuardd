@@ -19,6 +19,7 @@
   <div class="kicker"><i></i>Dashboard</div>
   <h1>Your servers</h1>
   <p class="sub">Pick a server to configure.</p>
+  <div class="dtabs"><a class="dtab on" href="/dashboard/" style="text-decoration:none">Servers</a><a class="dtab" href="/dashboard/bots/" style="text-decoration:none">My bots</a></div>
   {% if demo %}<div class="demo">Demo mode &middot; nothing is saved to the database</div>{% else %}
   <div class="who">Logged in as {{ user.username }} &middot; <a href="/dashboard/logout">Log out</a></div>{% endif %}
   <div class="sgrid">
