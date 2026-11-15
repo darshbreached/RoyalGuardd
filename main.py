@@ -116,6 +116,12 @@ async def main():
     if not token:
         raise RuntimeError("DISCORD_TOKEN is not set in the environment (.env)")
     async with bot:
+        try:
+            from cogs.tenant_manager import TenantManager
+            asyncio.create_task(TenantManager().run_forever())
+            log.info("Tenant manager started.")
+        except Exception as e:
+            log.error(f"Tenant manager not started: {e}")
         await bot.start(token)
 
 
