@@ -67,6 +67,7 @@ COGS = [
     "cogs.ticketverify",
     "cogs.emailverify",
     "cogs.modulegate",
+    "cogs.rowifigroups",
 ]
 
 
