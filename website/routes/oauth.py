@@ -5,10 +5,19 @@ Handles the Roblox OAuth2 authorization + callback flow.
 
 /authorize?state=<state>   -> redirects the user to Roblox's consent screen
 /callback?code=...&state=... -> exchanges the code for a token, fetches the
-                                  Roblox profile, geolocates and reverse
-                                  geocodes the requester's IP, writes
-                                  everything to MongoDB, and posts a
-                                  "Verification Logs" embed to Discord.
+                                  Roblox profile, links it to the Discord
+                                  account, and posts a "Verification Logs"
+                                  embed to Discord.
+
+PRIVACY: no IP address, location, address, coordinates or ISP is read, looked
+up, stored or logged anywhere in this flow. Only the Discord ID, Roblox ID,
+Roblox username and verification time are saved.
+
+Alt protection without IPs:
+  * a Roblox account that is already linked to a DIFFERENT Discord account is
+    refused (staff can /unverify the old link first)
+  * Roblox accounts younger than MIN_ACCOUNT_AGE_DAYS (env var, default 7) are
+    flagged in the verification log (not blocked)
 
 The oauth_states record (created by cogs/verification.py) carries which
 guild the /verify flow was started in, so the log gets posted to that
@@ -21,6 +30,8 @@ or for states created before this field existed.
 import os
 import time
 import logging
+from datetime import datetime, timezone
+
 import requests
 from flask import Blueprint, request, redirect, render_template
 from pymongo import MongoClient
@@ -37,105 +48,54 @@ CLIENT_ID = os.getenv("ROBLOX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("ROBLOX_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("ROBLOX_REDIRECT_URI")
 FALLBACK_VERIFICATION_WEBHOOK = os.getenv("DISCORD_VERIFICATION_WEBHOOK")
+MIN_ACCOUNT_AGE_DAYS = int(os.getenv("MIN_ACCOUNT_AGE_DAYS", "7"))
 
 _client = MongoClient(os.getenv("MONGODB_URI"))
 _db = _client[os.getenv("MONGODB_DB_NAME", "royalguard")]
 
+# Location fields an older version of this flow stored. They are removed from a
+# member's record whenever they verify again.
+OLD_LOCATION_FIELDS = [
+    "verification_ip", "verification_country", "verification_country_code",
+    "verification_region", "verification_address", "verification_city",
+    "verification_postal_code", "verification_latitude", "verification_longitude",
+    "verification_isp",
+]
 
+
+# Kept only so other modules that still import these names don't break on
+# startup. They no longer read an IP or look anything up.
 def get_client_ip():
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr
+    return None
 
 
-def get_geolocation(ip_address: str):
-    fallback = {
-        "ip": ip_address, "country": "Unknown", "country_code": "Unknown",
-        "region": "Unknown", "latitude": None, "longitude": None, "isp": "Unknown",
-    }
+def get_geolocation(ip_address=None):
+    return {"ip": None, "country": "Unknown", "country_code": "Unknown", "region": "Unknown",
+            "latitude": None, "longitude": None, "isp": "Unknown"}
+
+
+def reverse_geocode(latitude=None, longitude=None):
+    return {"address": "Unknown", "city": "Unknown", "postal_code": "Unknown"}
+
+
+def get_roblox_account_age_days(roblox_id):
+    """Days since the Roblox account was created (public profile data), or None."""
     try:
-        response = requests.get(f"https://ipinfo.io/{ip_address}/json", timeout=5)
-        if response.status_code != 200:
-            return fallback
-        data = response.json()
-        lat, lon = None, None
-        loc = data.get("loc")
-        if loc and "," in loc:
-            lat_str, lon_str = loc.split(",")
-            lat, lon = float(lat_str), float(lon_str)
-        return {
-            "ip": ip_address,
-            "country": data.get("country", "Unknown"),
-            "country_code": data.get("country", "Unknown"),
-            "region": data.get("region", "Unknown"),
-            "latitude": lat,
-            "longitude": lon,
-            "isp": data.get("org", "Unknown"),
-        }
+        resp = requests.get(f"https://users.roblox.com/v1/users/{roblox_id}", timeout=4)
+        if resp.status_code != 200:
+            return None
+        created = resp.json().get("created")
+        if not created:
+            return None
+        made = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if made.tzinfo is None:
+            made = made.replace(tzinfo=timezone.utc)
+        return max((datetime.now(timezone.utc) - made).days, 0)
     except Exception:
-        return fallback
+        return None
 
 
-def reverse_geocode(latitude, longitude):
-    """Turn a coordinate into a human-readable address + postal code.
-
-    Tries Nominatim (OpenStreetMap) first because it returns house-number-level
-    detail, then falls back to BigDataCloud (keyless) for city/postcode-level
-    data. Any failure degrades to "Unknown" so the embed and the Mongo write
-    never break on a missing coordinate or an unreachable provider."""
-    result = {"address": "Unknown", "city": "Unknown", "postal_code": "Unknown"}
-    if latitude is None or longitude is None:
-        return result
-
-    try:
-        resp = requests.get(
-            "https://nominatim.openstreetmap.org/reverse",
-            params={
-                "lat": latitude,
-                "lon": longitude,
-                "format": "jsonv2",
-                "addressdetails": 1,
-                "zoom": 18,
-            },
-            headers={"User-Agent": "RoyalGuard/1.0 (Discord verification bot)"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            addr = data.get("address") or {}
-            if addr:
-                return {
-                    "address": data.get("display_name") or "Unknown",
-                    "city": (
-                        addr.get("city") or addr.get("town") or addr.get("village")
-                        or addr.get("municipality") or addr.get("county") or "Unknown"
-                    ),
-                    "postal_code": addr.get("postcode") or "Unknown",
-                }
-    except Exception:
-        pass
-
-    try:
-        resp = requests.get(
-            "https://api.bigdatacloud.net/data/reverse-geocode-client",
-            params={"latitude": latitude, "longitude": longitude, "localityLanguage": "en"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            city = data.get("city") or data.get("locality") or "Unknown"
-            result["city"] = city
-            result["postal_code"] = data.get("postcode") or "Unknown"
-            parts = [p for p in (city, data.get("principalSubdivision"), data.get("countryName")) if p]
-            result["address"] = ", ".join(parts) if parts else "Unknown"
-    except Exception:
-        pass
-
-    return result
-
-
-def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str, geo: dict, webhook_url: str):
+def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str, age_days, webhook_url: str):
     if not webhook_url:
         return
 
@@ -144,17 +104,13 @@ def post_verification_log(discord_id: str, roblox_username: str, roblox_id: str,
     description = (
         f"Discord: <@{discord_id}> | `{discord_id}`\n"
         f"ROBLOX: {roblox_username} | {profile_url}\n"
-        f"Method: OAuth2\n\n"
-        f"IP: {geo['ip']}\n"
-        f"Country: {geo['country']}\n"
-        f"Country Code: {geo['country_code']}\n"
-        f"Region: {geo['region']}\n"
-        f"Address: {geo['address']}\n"
-        f"Postal Code: {geo['postal_code']}\n"
-        f"Latitude: {geo['latitude']}\n"
-        f"Longitude: {geo['longitude']}\n"
-        f"Internet Service Provider: {geo['isp']}"
+        f"Method: OAuth2"
     )
+    if age_days is not None:
+        description += f"\nAccount age: {age_days} day(s)"
+        if age_days < MIN_ACCOUNT_AGE_DAYS:
+            description += f"\n⚠️ New account (under {MIN_ACCOUNT_AGE_DAYS} days old)"
+    description += "\n\nNo IP address or location data is collected."
 
     embed = {
         "title": "Verification Logs",
@@ -280,31 +236,30 @@ def callback():
         return render_template("error.html", message="Failed to fetch your Roblox profile."), 400
 
     profile = userinfo_resp.json()
-    roblox_id = profile.get("sub")
+    roblox_id = str(profile.get("sub"))
     roblox_username = profile.get("preferred_username") or profile.get("nickname")
 
-    client_ip = get_client_ip()
-    geo = get_geolocation(client_ip)
-    geo.update(reverse_geocode(geo["latitude"], geo["longitude"]))
+    # One Roblox account can only be linked to one Discord account.
+    already = _db["verifications"].find_one({"roblox_id": roblox_id, "discord_id": {"$ne": discord_id}})
+    if already:
+        _db["oauth_states"].delete_one({"state": state})
+        return render_template(
+            "error.html",
+            message="That Roblox account is already linked to another Discord account. "
+                    "Ask a staff member to unverify the old link, then try again.",
+        ), 400
 
     _db["verifications"].update_one(
         {"discord_id": discord_id},
-        {"$set": {
-            "discord_id": discord_id,
-            "roblox_id": str(roblox_id),
-            "roblox_username": roblox_username,
-            "verified_at": time.time(),
-            "verification_ip": geo["ip"],
-            "verification_country": geo["country"],
-            "verification_country_code": geo["country_code"],
-            "verification_region": geo["region"],
-            "verification_address": geo["address"],
-            "verification_city": geo["city"],
-            "verification_postal_code": geo["postal_code"],
-            "verification_latitude": geo["latitude"],
-            "verification_longitude": geo["longitude"],
-            "verification_isp": geo["isp"],
-        }},
+        {
+            "$set": {
+                "discord_id": discord_id,
+                "roblox_id": roblox_id,
+                "roblox_username": roblox_username,
+                "verified_at": time.time(),
+            },
+            "$unset": {field: "" for field in OLD_LOCATION_FIELDS},
+        },
         upsert=True,
     )
 
@@ -317,7 +272,7 @@ def callback():
         if guild_config and guild_config.get("verification_webhook_url"):
             webhook_url = guild_config["verification_webhook_url"]
 
-    post_verification_log(discord_id, roblox_username, str(roblox_id), geo, webhook_url)
+    post_verification_log(discord_id, roblox_username, roblox_id, get_roblox_account_age_days(roblox_id), webhook_url)
 
     _db["oauth_states"].delete_one({"state": state})
 
@@ -325,7 +280,7 @@ def callback():
     return render_template(
         "success.html",
         roblox_username=roblox_username,
-        roblox_id=str(roblox_id),
+        roblox_id=roblox_id,
         roblox_avatar=get_roblox_avatar(roblox_id),
         discord_username=discord_info["username"],
         discord_id=str(discord_id),

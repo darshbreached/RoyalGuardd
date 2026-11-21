@@ -58,7 +58,7 @@ WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.ra
 
 GAME_URL = os.getenv("ROBLOX_VERIFY_GAME_URL", "").strip()
 
-OAUTH_LOGIN_ENABLED = False  # True turns "Verify via ROBLOX Login" back on
+OAUTH_LOGIN_ENABLED = True  # True turns "Verify via ROBLOX Login" back on
 GAME_VERIFY_ENABLED = bool(GAME_URL)  # on automatically once ROBLOX_VERIFY_GAME_URL is set
 print(f"[VERIFICATION] game url set: {bool(GAME_URL)}")
 
