@@ -1,0 +1,120 @@
+{% extends "rg_base.html" %}
+{% block title %}Admin | Royal Guard{% endblock %}
+{% block head %}<meta name="robots" content="noindex, nofollow"><link rel="stylesheet" href="{{ url_for('static', filename='css/rg-dash.css') }}">
+<style>
+.box { padding: 26px; margin-bottom: 22px; } .box h3 { font-size: 1.4rem; margin-bottom: 14px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; } @media (max-width: 700px) { .row2 { grid-template-columns: 1fr; } }
+.box .dsearch { max-width: none; margin-bottom: 14px; } .box textarea.dsearch { min-height: 110px; font-family: inherit; }
+.pill { display: inline-block; padding: 3px 10px; border-radius: 3px; font: 500 .7rem var(--mono); letter-spacing: .1em; text-transform: uppercase; border: 1px solid var(--gline); color: var(--rg-gold); }
+.pill.bad { color: #ff8a80; border-color: rgba(255, 138, 128, .4); }
+.note { color: var(--rg-muted); font-size: .85rem; margin: 0 0 14px; } .msg { margin-top: 10px; font-size: .9rem; min-height: 1.2em; } .msg.bad { color: #ff8a80; }
+.job { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--line); font-size: .9rem; } .job small { color: var(--rg-muted); word-break: break-all; }
+.top { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+</style>{% endblock %}
+{% block content %}
+<div class="dwrap" id="admin">
+  <div class="top"><div><div class="kicker"><i></i>Owner only</div><h1>Admin</h1></div><a class="bbtn" style="border:1px solid rgba(255,255,255,.2);padding:8px 14px;border-radius:4px;color:var(--rg-text);text-decoration:none" href="/admin/logout">Log out</a></div>
+
+  <div class="frame box">
+    <h3>Status</h3>
+    <span class="pill bad" id="online">Checking...</span>
+    <p class="note" id="statline" style="margin-top:12px"></p>
+  </div>
+
+  <div class="frame box">
+    <h3>Target channel</h3>
+    <div class="row2">
+      <div><label class="lbl">Server</label><select class="dsearch" id="gsel"></select></div>
+      <div><label class="lbl">Channel</label><select class="dsearch" id="csel"></select></div>
+    </div>
+    <label class="lbl" for="cid">Or paste a channel ID (overrides the dropdowns)</label>
+    <input class="dsearch" id="cid" type="text" inputmode="numeric" placeholder="e.g. 1571833845899206757">
+    <p class="note">Servers and channels come from the bot's latest status update. The bot needs permission to send in the channel.</p>
+  </div>
+
+  <div class="frame box">
+    <h3>Post a panel</h3>
+    <label class="lbl">Panel</label>
+    <select class="dsearch" id="panel">{% for key, label in panels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+    <button class="rg-btn" id="postPanel">Post panel</button>
+    <div class="msg" id="m1"></div>
+  </div>
+
+  <div class="frame box">
+    <h3>Send a message</h3>
+    <label class="lbl">Title (optional)</label><input class="dsearch" id="mt" type="text" maxlength="256">
+    <label class="lbl">Message</label><textarea class="dsearch" id="md" maxlength="4000"></textarea>
+    <button class="rg-btn" id="sendMsg">Send</button>
+    <div class="msg" id="m2"></div>
+  </div>
+
+  <div class="frame box">
+    <h3>Bot token</h3>
+    <p class="note" id="tokline"></p>
+    <label class="lbl">New bot token</label>
+    <input class="dsearch" id="tok" type="password" autocomplete="off" placeholder="Paste the new token">
+    <button class="rg-btn" id="saveTok">Save token</button>
+    <button class="rg-btn rg-btn--ghost" id="clrTok">Remove saved token</button>
+    <p class="note" style="margin-top:14px">A saved token is used the next time the bot starts. If it fails to log in, the bot falls back to the DISCORD_TOKEN variable.</p>
+    <button class="rg-btn rg-btn--ghost" id="restart">Restart bot now</button>
+    <div class="msg" id="m3"></div>
+  </div>
+
+  <div class="frame box"><h3>Recent actions</h3><div id="jobs"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var CSRF = {{ csrf|tojson }}, GUILDS = {{ guilds|tojson }};
+  function api(url, body, method) {
+    return fetch(url, {method: method || 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF},
+      body: body ? JSON.stringify(body) : undefined}).then(function (r) { return r.json(); });
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  var gsel = $('gsel'), csel = $('csel');
+  GUILDS.forEach(function (g, i) { var o = document.createElement('option'); o.value = i; o.textContent = g.name; gsel.appendChild(o); });
+  function fillChannels() {
+    csel.innerHTML = ''; var g = GUILDS[gsel.value]; if (!g) return;
+    g.channels.forEach(function (c) { var o = document.createElement('option'); o.value = c.id; o.textContent = '#' + c.name; csel.appendChild(o); });
+  }
+  gsel.addEventListener('change', fillChannels); fillChannels();
+  function target() { return $('cid').value.trim() || csel.value || ''; }
+  function say(id, text, bad) { var m = $(id); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text; }
+  function queue(body, msgId, okText) {
+    return api('/admin/api/job', body).then(function (d) { say(msgId, d.ok ? okText : d.error, !d.ok); refresh(); });
+  }
+  $('postPanel').addEventListener('click', function () { queue({type: 'post_panel', panel: $('panel').value, channel_id: target()}, 'm1', 'Queued. Watch Recent actions below.'); });
+  $('sendMsg').addEventListener('click', function () { queue({type: 'send_message', title: $('mt').value, description: $('md').value, channel_id: target()}, 'm2', 'Queued. Watch Recent actions below.'); });
+  $('restart').addEventListener('click', function () { if (confirm('Restart the bot now?')) queue({type: 'restart'}, 'm3', 'Restart queued.'); });
+  $('saveTok').addEventListener('click', function () {
+    say('m3', 'Checking token...');
+    api('/admin/api/token', {token: $('tok').value}).then(function (d) {
+      if (d.ok) { $('tok').value = ''; say('m3', 'Saved for bot "' + d.name + '". Press Restart bot now to use it.'); refresh(); } else say('m3', d.error, true);
+    });
+  });
+  $('clrTok').addEventListener('click', function () {
+    if (!confirm('Remove the saved token? The bot goes back to the DISCORD_TOKEN variable on next start.')) return;
+    api('/admin/api/token', {clear: true}).then(function () { say('m3', 'Saved token removed.'); refresh(); });
+  });
+  function refresh() {
+    api('/admin/api/status', null, 'GET').then(function (d) {
+      if (!d.ok) { location.href = '/admin/login'; return; }
+      var o = $('online'); o.textContent = d.online ? 'Online' : 'No recent signal'; o.className = 'pill' + (d.online ? '' : ' bad');
+      $('statline').textContent = d.age === null ? 'The bot has not reported yet.' : (d.user + ' | ' + d.latency + ' ms | last update ' + d.age + 's ago');
+      $('tokline').textContent = d.override ? 'Saved token active: ' + d.override.name + ' (saved ' + d.override.set_at + ')' : 'No saved token. The bot uses the DISCORD_TOKEN variable.';
+      var box = $('jobs'); box.innerHTML = '';
+      if (!d.jobs.length) box.textContent = 'Nothing yet.';
+      d.jobs.forEach(function (j) {
+        var row = document.createElement('div'); row.className = 'job';
+        var s = document.createElement('span'); s.className = 'pill' + (j.status === 'error' ? ' bad' : ''); s.textContent = j.status;
+        var t = document.createElement('span'); t.textContent = j.when + '  ' + j.label;
+        var r = document.createElement('small'); r.textContent = j.result;
+        row.appendChild(s); row.appendChild(t); row.appendChild(r); box.appendChild(row);
+      });
+    });
+  }
+  refresh(); setInterval(refresh, 5000);
+})();
+</script>
+{% endblock %}

@@ -21,6 +21,8 @@ from website.routes.site import site_bp
 app.register_blueprint(site_bp)
 from website.routes.dashboard import dash_bp
 app.register_blueprint(dash_bp)
+from website.routes.admin import admin_bp
+app.register_blueprint(admin_bp)
 from website.routes.bots import bots_bp
 app.register_blueprint(bots_bp)
 from website.routes.oauth import oauth_bp

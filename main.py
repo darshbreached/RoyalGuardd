@@ -68,6 +68,7 @@ COGS = [
     "cogs.emailverify",
     "cogs.modulegate",
     "cogs.rowifigroups",
+    "cogs.adminjobs",
 ]
 
 
@@ -112,19 +113,40 @@ class RoyalGuardBot(commands.Bot):
 
 
 async def main():
-    bot = RoyalGuardBot()
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is not set in the environment (.env)")
-    async with bot:
+    env_token = os.getenv("DISCORD_TOKEN")
+
+    async def saved_token():
+        # A token saved from the website's admin page (encrypted in MongoDB).
         try:
-            from cogs.tenant_manager import TenantManager
-            asyncio.create_task(TenantManager().run_forever())
-            log.info("Tenant manager started.")
+            from utils.token_crypto import decrypt_token
+            doc = await db.db["bot_config"].find_one({"_id": "main_token"})
+            return decrypt_token(doc["encrypted_token"]) if doc else None
         except Exception as e:
-            log.error(f"Tenant manager not started: {e}")
-        await bot.start(token)
+            log.error(f"Could not read the saved bot token, using DISCORD_TOKEN instead: {type(e).__name__}")
+            return None
 
+    saved = await saved_token()
+    tokens = []
+    for t in (saved, env_token):
+        if t and t not in tokens:
+            tokens.append(t)
+    if not tokens:
+        raise RuntimeError("DISCORD_TOKEN is not set in the environment (.env)")
 
-if __name__ == "__main__":
+    try:
+        from cogs.tenant_manager import TenantManager
+        asyncio.create_task(TenantManager().run_forever())
+        log.info("Tenant manager started.")
+    except Exception as e:
+        log.error(f"Tenant manager not started: {e}")
+
+    for token in tokens:
+        bot = RoyalGuardBot()
+        try:
+            async with bot:
+                await bot.start(token)
+            return
+        except discord.LoginFailure:
+            log.error("Discord rejected a bot token" + (" (the saved one), trying DISCORD_TOKEN" if token == saved and env_token and token != env_token else "") + ".")
+    raise RuntimeError("Every bot token was rejected by Discord.")
     asyncio.run(main())
