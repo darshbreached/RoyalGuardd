@@ -8,7 +8,7 @@ import os
 
 BOT_NAME = "Royal Guard"
 BOT_TAG = "Canadian Army Verification System"
-BOT_VERSION = "by astral © 2026. All Rights Reserved."
+BOT_VERSION = "astral © 2026. All Rights Reserved."
 
 BOT_ICON_URL = os.getenv(
     "BOT_ICON_URL",
@@ -21,7 +21,7 @@ ERROR_COLOR = 0x800000
 WARNING_COLOR = 0xFFD700
 INFO_COLOR = 0x3498DB
 
-FOOTER_TEXT = f"{BOT_NAME} {BOT_VERSION}"
+FOOTER_TEXT = BOT_VERSION
 FOOTER_ICON = BOT_ICON_URL
 
 AUTHOR_TEXT = "Royal Guard"

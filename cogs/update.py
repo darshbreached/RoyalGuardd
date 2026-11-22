@@ -50,6 +50,7 @@ from discord.ext import commands
 from database.mongodb import db
 from utils import embeds, roblox
 from utils.permissions import require_level, has_level
+from utils.updateembeds import not_verified_embed
 from config import settings
 
 # Minimum admin level needed to run /update on someone other than yourself.
@@ -271,10 +272,7 @@ class Update(commands.Cog):
 
         verification = await db.get_verification(target.id)
         if not verification:
-            who = f"{target.mention} must" if updating_other else "You must"
-            return await interaction.followup.send(
-                embed=embeds.error_embed("Warning - Not Verified", f"{who} be verified to update roles.")
-            )
+            return await interaction.followup.send(embed=not_verified_embed(target))
 
         try:
             added, removed, nickname_changed = await sync_member_roles(

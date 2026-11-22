@@ -15,12 +15,15 @@ the Non-Verified role if one is configured. Roles that come from rankbinds are
 NOT touched. Logged to the same verification webhook.
 
 The panel posted by /panel verification uses VerificationView below:
-"Verify via ROBLOX Login" (switched off - flip OAUTH_LOGIN_ENABLED to bring it
-back), "Verify via ROBLOX Ticket" (hands off to
+"Verify via ROBLOX Login" (on - set OAUTH_LOGIN_ENABLED = False to switch it off;
+the login flow no longer collects any IP or location data),
+"Verify via ROBLOX Ticket" (hands off to
 cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
 account?" Yes/No as the Login button, and No opens a ticket to re-verify),
 "Verify via ROBLOX Game" and "Update Roles". Panels that were
 posted BEFORE a change keep their old buttons until /panel verification is run again.
+
+"Update Roles" (and /update) show the same embeds - see utils/updateembeds.py.
 
 "Verify via ROBLOX Game": the member types their Roblox username in a popup,
 gets the game link + a Done button, joins the game on that account, confirms
@@ -29,11 +32,13 @@ The button is only enabled when ROBLOX_VERIFY_GAME_URL is set (Railway env var
 on the bot services). The game talks to website/routes/gameverify.py.
 
 Every "sync roles" action (the Update Roles buttons and /forceverify) also
-assigns a timezone role based on the country/region captured during
-verification - see utils/timezones.py for the country->label mapping and
-its accuracy limitations. Assignment is by exact role NAME match
-(e.g. a role literally named "EST"), same convention as verified_roles/
-extra_roles - if the guild hasn't created that role, it's silently skipped.
+assigns a timezone role based on the country/region stored for members who
+verified before location data was removed - see utils/timezones.py for the
+country->label mapping and its accuracy limitations. Members with no stored
+country/region are skipped (their existing timezone role is left alone).
+Assignment is by exact role NAME match (e.g. a role literally named "EST"),
+same convention as verified_roles/extra_roles - if the guild hasn't created
+that role, it's silently skipped.
 """
 
 import os
@@ -51,6 +56,7 @@ from utils.permissions import require_level
 from utils import roblox
 from utils.timezones import get_timezone_label, all_timezone_labels
 from cogs.update import sync_member_roles
+from utils.updateembeds import not_verified_embed, roles_update_embed
 from utils.roblox import RobloxAPIError
 from config import settings
 
@@ -58,7 +64,7 @@ WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.ra
 
 GAME_URL = os.getenv("ROBLOX_VERIFY_GAME_URL", "").strip()
 
-OAUTH_LOGIN_ENABLED = True  # True turns "Verify via ROBLOX Login" back on
+OAUTH_LOGIN_ENABLED = True  # False turns "Verify via ROBLOX Login" off
 GAME_VERIFY_ENABLED = bool(GAME_URL)  # on automatically once ROBLOX_VERIFY_GAME_URL is set
 print(f"[VERIFICATION] game url set: {bool(GAME_URL)}")
 
@@ -72,6 +78,11 @@ async def _apply_timezone_role(guild: discord.Guild, member: discord.Member, ver
     country_code = verification.get("verification_country_code")
     region = verification.get("verification_region")
     label = get_timezone_label(country_code, region)
+
+    # No stored location at all (OAuth no longer collects it): leave any
+    # existing timezone role alone instead of stripping it.
+    if not country_code and not region:
+        return None
 
     # Strip any other timezone-label role first, regardless of whether a
     # new one will be applied - handles someone re-verifying from a
@@ -131,7 +142,7 @@ async def _post_force_verify_log(guild: discord.Guild, target: discord.Member, r
         f"Discord: {target.mention} | `{target.id}`\n"
         f"ROBLOX: {roblox_username} | {profile_url}\n"
         f"Method: **Manual Override (/forceverify)**\n\n"
-        f"⚠️ Manually verified by {staff.mention} (`{staff.id}`) — bypassed OAuth, no IP/account-age checks were run."
+        f"⚠️ Manually verified by {staff.mention} (`{staff.id}`) — bypassed OAuth, so no duplicate-account or account-age checks were run."
     )
 
     embed = {"title": "Verification Logs", "description": description, "color": 0x9B59B6}
@@ -173,10 +184,7 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
 
         verification = await db.get_verification(interaction.user.id)
         if not verification:
-            return await interaction.followup.send(
-                embed=embeds.error_embed("Not Verified", "You need to verify your Roblox account first."),
-                ephemeral=True,
-            )
+            return await interaction.followup.send(embed=not_verified_embed(interaction.user), ephemeral=True)
 
         try:
             added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
@@ -190,16 +198,7 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
             )
 
         tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
-
-        desc = "Your roles are now up to date."
-        if added:
-            desc += f"\n**Added:** {', '.join(added)}"
-        if removed:
-            desc += f"\n**Removed:** {', '.join(removed)}"
-        if tz_label:
-            desc += f"\n**Timezone:** {tz_label}"
-
-        await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
+        await interaction.followup.send(embed=roles_update_embed(interaction.user, added, removed, tz_label), ephemeral=True)
 
 
 class GameDoneView(discord.ui.View):
@@ -482,10 +481,7 @@ class VerificationView(discord.ui.View):
 
         verification = await db.get_verification(interaction.user.id)
         if not verification:
-            return await interaction.followup.send(
-                embed=embeds.error_embed("Not Verified", "You need to verify your Roblox account first."),
-                ephemeral=True,
-            )
+            return await interaction.followup.send(embed=not_verified_embed(interaction.user), ephemeral=True)
 
         try:
             added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
@@ -499,16 +495,7 @@ class VerificationView(discord.ui.View):
             )
 
         tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
-
-        desc = "Your roles are now up to date."
-        if added:
-            desc += f"\n**Added:** {', '.join(added)}"
-        if removed:
-            desc += f"\n**Removed:** {', '.join(removed)}"
-        if tz_label:
-            desc += f"\n**Timezone:** {tz_label}"
-
-        await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
+        await interaction.followup.send(embed=roles_update_embed(interaction.user, added, removed, tz_label), ephemeral=True)
 
 
 class Verification(commands.Cog):
