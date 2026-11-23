@@ -1,11 +1,8 @@
 """
 cogs/adminjobs.py
-Carries out the jobs queued by the owner-only /admin page on the website
-(post a panel, send a message, restart) and publishes the bot's status
-(online signal, servers and channels) so the page can show it.
-
-Jobs live in the "admin_jobs" collection; status lives in "bot_status".
-Only the main bot loads this cog.
+Carries out the jobs queued by the owner-only /admin page on the website:
+post a panel, send a message, or restart the bot. Only the main bot loads this.
+Jobs live in the "admin_jobs" collection.
 """
 
 import os
@@ -21,9 +18,6 @@ from utils import embeds
 from config import settings
 
 log = logging.getLogger("RoyalGuard")
-
-STATUS_EVERY = 30
-CHANNEL_CAP = 400
 
 
 def _panel_verification():
@@ -54,7 +48,6 @@ PANELS = {
 class AdminJobs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._last_status = 0.0
         self.tick.start()
 
     async def cog_unload(self):
@@ -63,8 +56,6 @@ class AdminJobs(commands.Cog):
     @tasks.loop(seconds=5)
     async def tick(self):
         try:
-            if time.time() - self._last_status >= STATUS_EVERY:
-                await self._publish_status()
             while True:
                 job = await db.db["admin_jobs"].find_one_and_update(
                     {"status": "pending"},
@@ -80,19 +71,6 @@ class AdminJobs(commands.Cog):
     @tick.before_loop
     async def _before_tick(self):
         await self.bot.wait_until_ready()
-
-    async def _publish_status(self):
-        self._last_status = time.time()
-        guilds = []
-        for g in sorted(self.bot.guilds, key=lambda g: g.name.lower()):
-            channels = [{"id": str(c.id), "name": c.name} for c in g.text_channels[:CHANNEL_CAP]]
-            guilds.append({"id": str(g.id), "name": g.name, "members": g.member_count, "channels": channels})
-        await db.db["bot_status"].update_one(
-            {"_id": "main"},
-            {"$set": {"updated_at": time.time(), "user": str(self.bot.user),
-                      "latency_ms": round(self.bot.latency * 1000), "guilds": guilds}},
-            upsert=True,
-        )
 
     async def _channel(self, channel_id):
         channel = self.bot.get_channel(int(channel_id)) or await self.bot.fetch_channel(int(channel_id))

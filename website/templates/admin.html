@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<style>
+  .adm { width: 100%; max-width: 560px; }
+  .adm h1 { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 1.4rem; margin: 0; }
+  .adm h2 { font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 1rem; margin: 30px 0 12px; padding-top: 22px; border-top: 1px solid var(--border); }
+  .adm label { display: block; font-size: .8rem; color: var(--text-dim); margin: 0 0 6px; }
+  .adm input, .adm select, .adm textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 11px 12px; color: var(--text); font: inherit; margin-bottom: 14px; }
+  .adm textarea { min-height: 100px; }
+  .adm button { background: var(--glass); color: #14161B; border: 0; border-radius: 6px; padding: 10px 18px; font: 600 .9rem 'Inter', sans-serif; cursor: pointer; margin-right: 8px; }
+  .adm button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .adm .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .adm .msg { margin: 16px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: .9rem; }
+  .adm .msg.bad { color: var(--error); }
+  .adm .note { color: var(--text-dim); font-size: .82rem; margin: 0 0 12px; }
+  .adm .job { padding: 8px 0; border-top: 1px solid var(--border); font-size: .88rem; word-break: break-all; }
+  .adm .job small { display: block; color: var(--text-dim); }
+</style>
+<div class="panel adm">
+  <div class="top"><h1>Admin</h1><a href="/admin/logout">Log out</a></div>
+  {% if msg %}<p class="msg{% if msg[1] %} bad{% endif %}">{{ msg[0] }}</p>{% endif %}
+
+  <h2>Post a panel</h2>
+  <form method="post" action="/admin/panel">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Channel ID</label>
+    <input name="channel_id" inputmode="numeric" placeholder="e.g. 1571833845899206757" required>
+    <label>Panel</label>
+    <select name="panel">{% for key, label in panels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+    <button type="submit">Post panel</button>
+  </form>
+
+  <h2>Send a message</h2>
+  <form method="post" action="/admin/message">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Channel ID</label>
+    <input name="channel_id" inputmode="numeric" required>
+    <label>Title (optional)</label>
+    <input name="title" maxlength="256">
+    <label>Message</label>
+    <textarea name="description" maxlength="4000" required></textarea>
+    <button type="submit">Send</button>
+  </form>
+
+  <h2>Bot token</h2>
+  <p class="note">{% if override %}Saved token in use: {{ override.name }}.{% else %}No saved token. The bot uses the DISCORD_TOKEN variable.{% endif %} A saved token is used the next time the bot starts; if it fails to log in, the bot falls back to DISCORD_TOKEN.</p>
+  <form method="post" action="/admin/token">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>New bot token</label>
+    <input name="token" type="password" autocomplete="off">
+    <button type="submit">Save token</button>
+  </form>
+  <form method="post" action="/admin/token/clear" style="display:inline" onsubmit="return confirm('Remove the saved token?')">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost" type="submit">Remove saved token</button>
+  </form>
+  <form method="post" action="/admin/restart" style="display:inline" onsubmit="return confirm('Restart the bot now?')">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost" type="submit">Restart bot</button>
+  </form>
+
+  <h2>Recent actions</h2>
+  {% for j in jobs %}
+  <div class="job">{{ j.when }} &middot; {{ j.label }} &middot; <strong>{{ j.status }}</strong>
+    {% if j.result %}<small>{% if j.result.startswith('https://discord.com/') %}<a href="{{ j.result }}">{{ j.result }}</a>{% else %}{{ j.result }}{% endif %}</small>{% endif %}</div>
+  {% else %}<p class="note">Nothing yet.</p>{% endfor %}
+  <p class="note" style="margin-top:14px"><a href="/admin/">Refresh</a>{% if busy %} (updating...){% endif %}</p>
+</div>
+{% if busy %}<script>setTimeout(function () { location.href = '/admin/'; }, 4000);</script>{% endif %}
+{% endblock %}

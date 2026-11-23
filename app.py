@@ -1,106 +1,50 @@
 """
-Darsh Industries - tenant registration site.
-
-Standalone Flask app, separate from the main Royal Guard website. Lets a
-regiment server owner submit their own Discord bot token to be hosted as a
-tenant of Royal Guard Services. Submissions are auto-approved: they're
-written directly into the shared `tenants` collection (same one
-tenant_manager.py already reads from) as status="active".
-
-NOTE: this site only registers a tenant into MongoDB. It does not itself
-start a bot process. tenant_manager.py (currently paused per the Royal
-Guard tenant retirement) still has to actually be running for a registered
-tenant's bot to come online.
+website/app.py
+---------------
+Flask backend that hosts the Roblox OAuth2 verification flow and the
+owner-only admin page. Deployed as a separate Railway service (the "web"
+process type) alongside the bot's "worker" process. Both share the same
+MongoDB Atlas cluster, so verification data written here is instantly
+visible to the bot.
 """
-
 import os
-import re
-import time
-from datetime import datetime
-
-from flask import Flask, render_template, request
-from pymongo import MongoClient
-from cryptography.fernet import Fernet, InvalidToken
+from flask import Flask, render_template
 from dotenv import load_dotenv
-
 load_dotenv()
-
-app = Flask(__name__)
-
-MONGODB_URI = os.getenv("MONGODB_URI")
-MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "royalguard")
-TENANT_ENCRYPTION_KEY = os.getenv("TENANT_ENCRYPTION_KEY")
-
-if not MONGODB_URI:
-    raise RuntimeError("MONGODB_URI is not set in the environment (.env)")
-if not TENANT_ENCRYPTION_KEY:
-    raise RuntimeError("TENANT_ENCRYPTION_KEY is not set in the environment (.env)")
-
-client = MongoClient(MONGODB_URI)
-db = client[MONGODB_DB_NAME]
-tenants = db["tenants"]
-
-fernet = Fernet(TENANT_ENCRYPTION_KEY.encode())
-
-DISCORD_ID_RE = re.compile(r"^\d{15,20}$")
-
-
-def looks_like_bot_token(token: str) -> bool:
-    """Loose sanity check only - not a real validation against Discord's API.
-    Bot tokens are long, dot-delimited base64-ish strings. This just catches
-    obvious mistakes (pasting the wrong thing, empty field, etc)."""
-    token = token.strip()
-    return len(token) >= 50 and token.count(".") == 2
-
-
-@app.route("/", methods=["GET"])
+app = Flask(__name__, template_folder="templates")
+app.secret_key = os.getenv("WEBSITE_SECRET_KEY", "dev-secret-change-me")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.getenv("RAILWAY_ENVIRONMENT")),
+)
+from website.routes.oauth import oauth_bp
+app.register_blueprint(oauth_bp)
+from website.routes.appeal import appeal_bp
+app.register_blueprint(appeal_bp)
+from website.routes.gameverify import gameverify_bp
+app.register_blueprint(gameverify_bp)
+from website.routes.admin import admin_bp
+app.register_blueprint(admin_bp)
+@app.route("/")
 def index():
-    return render_template("index.html", success=None, error=None, form={})
-
-
-@app.route("/register", methods=["POST"])
-def register():
-    server_name = request.form.get("server_name", "").strip()
-    owner_discord_id = request.form.get("owner_discord_id", "").strip()
-    bot_token = request.form.get("bot_token", "").strip()
-    agree = request.form.get("agree")
-
-    form_echo = {"server_name": server_name, "owner_discord_id": owner_discord_id}
-
-    if not server_name or not owner_discord_id or not bot_token:
-        return render_template("index.html", success=None,
-                                error="Every field is required.", form=form_echo)
-
-    if not DISCORD_ID_RE.match(owner_discord_id):
-        return render_template("index.html", success=None,
-                                error="That doesn't look like a valid Discord user ID (15-20 digits).",
-                                form=form_echo)
-
-    if not looks_like_bot_token(bot_token):
-        return render_template("index.html", success=None,
-                                error="That doesn't look like a valid Discord bot token. Double-check you copied the full token from the Developer Portal.",
-                                form=form_echo)
-
-    if not agree:
-        return render_template("index.html", success=None,
-                                error="You need to confirm you own this bot token and understand it will be hosted by Darsh Industries.",
-                                form=form_echo)
-
-    encrypted_token = fernet.encrypt(bot_token.encode()).decode()
-
-    doc = {
-        "owner_discord_id": owner_discord_id,
-        "encrypted_token": encrypted_token,
-        "bot_name": server_name,
-        "status": "active",
-        "last_error": None,
-        "created_at": time.time(),
-        "registered_via": "darsh-industries-site",
-    }
-    result = tenants.insert_one(doc)
-
-    return render_template("index.html", success=str(result.inserted_id), error=None, form={})
-
-
+    from website.servers import get_listing
+    return render_template("index.html", **get_listing())
+@app.route("/health")
+def health():
+    return {"status": "healthy"}
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html")
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
+@app.errorhandler(404)
+def not_found(e):
+    return render_template("error.html", message="That page doesn't exist."), 404
+@app.errorhandler(500)
+def server_error(e):
+    return render_template("error.html", message="Something went wrong on our end. Please try again."), 500
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5050)))
+    port = int(os.getenv("WEBSITE_PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
