@@ -149,4 +149,7 @@ async def main():
         except discord.LoginFailure:
             log.error("Discord rejected a bot token" + (" (the saved one), trying DISCORD_TOKEN" if token == saved and env_token and token != env_token else "") + ".")
     raise RuntimeError("Every bot token was rejected by Discord.")
+
+
+if __name__ == "__main__":
     asyncio.run(main())
