@@ -20,8 +20,14 @@ the login flow no longer collects any IP or location data),
 "Verify via ROBLOX Ticket" (hands off to
 cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
 account?" Yes/No as the Login button, and No opens a ticket to re-verify),
-"Verify via ROBLOX Game" and "Update Roles". Panels that were
-posted BEFORE a change keep their old buttons until /panel verification is run again.
+"Verify via Discord Connection", "Verify via ROBLOX Game" and "Update Roles".
+Panels that were posted BEFORE a change keep their old buttons until
+/panel verification is run again.
+
+"Verify via Discord Connection": reads the Roblox account the member linked in
+Discord (User Settings -> Connections). The member opens a link, logs in with
+Discord (identify + connections scopes), the website saves the link, then they
+press Done here. Backend: website/routes/discordconnect.py.
 
 "Update Roles" (and /update) show the same embeds - see utils/updateembeds.py.
 
@@ -49,6 +55,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import secrets
+from urllib.parse import quote
 
 from database.mongodb import db
 from utils import embeds
@@ -327,6 +334,108 @@ class ConfirmGameAccountView(discord.ui.View):
         await interaction.response.send_modal(GameUsernameModal())
 
 
+class ConnectDoneView(discord.ui.View):
+    """Shown with the Discord Connection link. Done = 'I finished on the website, give me roles.'"""
+
+    def __init__(self, started_at: float):
+        super().__init__(timeout=600)
+        self.started_at = started_at
+
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        verification = await db.get_verification(interaction.user.id)
+        fresh = False
+        if verification:
+            ts = verification.get("verified_at")
+            try:
+                fresh = ts is None or float(ts) >= self.started_at - 5
+            except (TypeError, ValueError):
+                fresh = True
+        if not verification or not fresh:
+            return await interaction.followup.send(
+                embed=embeds.warning_embed(
+                    "Not Verified Yet",
+                    "I haven't seen you finish on the website yet.\n\n"
+                    "Open the link, log in with Discord, then press **Done** again.\n"
+                    "Make sure Roblox is linked in Discord: **User Settings > Connections > Roblox**."
+                ),
+                ephemeral=True,
+            )
+
+        try:
+            added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
+        except RobloxAPIError:
+            return await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Roblox Temporarily Unavailable",
+                    "You're verified, but Roblox's API didn't respond just now so no roles were changed. "
+                    "Press **Update Roles** on the panel in a minute."
+                ),
+                ephemeral=True,
+            )
+
+        desc = f"You are now verified as **{verification.get('roblox_username')}**."
+        if added:
+            desc += f"\n**Added:** {', '.join(added)}"
+        if removed:
+            desc += f"\n**Removed:** {', '.join(removed)}"
+
+        await interaction.followup.send(embed=embeds.success_embed("Verified", desc), ephemeral=True)
+        try:
+            await interaction.edit_original_response(view=None)
+        except Exception:
+            pass
+        self.stop()
+
+
+async def _start_connect_flow(interaction: discord.Interaction, edit: bool = False):
+    """Creates the pending state and shows the link + Done button."""
+    started_at = time.time()
+    state = f"dcconn:{secrets.token_urlsafe(16)}:{int(started_at)}"
+    await db.create_oauth_state(state, interaction.user.id, interaction.guild.id)
+    url = f"{WEBSITE_BASE_URL}/connect-verify?state={quote(state, safe='')}"
+
+    embed = embeds.info_embed(
+        settings.VERIFICATION_PANEL_TITLE,
+        "**Before you start:** link your Roblox account in Discord under "
+        "**User Settings > Connections > Roblox**.\n\n"
+        "1. Press **Begin Verification** and log in with Discord.\n"
+        "2. Come back here and press **Done**.\n\n"
+        "**Please DO NOT share this link with anyone.**\n"
+        "This request expires in **10 minutes**."
+    )
+    view = ConnectDoneView(started_at)
+    view.add_item(discord.ui.Button(label="Begin Verification", style=discord.ButtonStyle.link, url=url))
+
+    if edit:
+        await interaction.response.edit_message(embed=embed, view=view)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class ConfirmConnectAccountView(discord.ui.View):
+    """Shown when an already-verified member presses "Verify via Discord Connection".
+    Yes -> Update Roles. No -> start the connection flow to link a different account."""
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = embeds.warning_embed(
+            settings.VERIFICATION_PANEL_TITLE,
+            "You are already verified. If you wish to retrieve new roles or update yourself, "
+            "please use the button below."
+        )
+        await interaction.response.edit_message(embed=embed, view=AlreadyVerifiedUpdateView())
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _start_connect_flow(interaction, edit=True)
+
+
 class ConfirmAccountView(discord.ui.View):
     def __init__(self, roblox_username: str, roblox_id: str):
         super().__init__(timeout=180)
@@ -444,6 +553,25 @@ class VerificationView(discord.ui.View):
             return await interaction.response.send_message(embed=embed, view=ConfirmTicketAccountView(), ephemeral=True)
 
         await cog.start_ticket(interaction)
+
+    @discord.ui.button(label="Verify via Discord Connection", style=discord.ButtonStyle.success,
+                        custom_id="royalguard:verify_connect", row=0)
+    async def verify_connect(self, interaction: discord.Interaction, button: discord.ui.Button):
+        verification = await db.get_verification(interaction.user.id)
+        if verification:
+            roblox_id = verification["roblox_id"]
+            roblox_username = verification["roblox_username"]
+            profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+            embed = embeds.info_embed(
+                settings.VERIFICATION_PANEL_TITLE,
+                f"Is this your ROBLOX account?\n\n"
+                f"ROBLOX Username: [{roblox_username}]({profile_url})\n"
+                f"ROBLOX Profile: {profile_url}"
+            )
+            return await interaction.response.send_message(embed=embed, view=ConfirmConnectAccountView(), ephemeral=True)
+
+        await _start_connect_flow(interaction)
 
     @discord.ui.button(label="Verify via ROBLOX Game", style=discord.ButtonStyle.success,
                         custom_id="royalguard:verify_game", row=1, disabled=not GAME_VERIFY_ENABLED)
