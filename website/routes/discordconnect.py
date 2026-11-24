@@ -7,13 +7,14 @@ Discord (User Settings -> Connections -> Roblox) using Discord OAuth2 with the
 
 Flow:
   1. Bot creates a pending state "dcconn:<token>:<unix_time>" in oauth_states
-     (same helper as the other methods) and gives the member a link to
-     /connect-verify?state=...
+     and gives the member a link to /connect-verify?state=...
+     (the link must be opened within 2 minutes)
   2. /connect-verify sends them to Discord to authorise (identify + connections).
   3. /connect-verify/callback exchanges the code, checks the Discord account
      matches the one that pressed the button, reads the "roblox" connection,
      double-checks the Roblox ID against the Roblox API, then saves it.
-  4. Member returns to Discord and presses Done.
+  4. It also queues a document in `pending_role_sync`; the bot (cogs/verification.py)
+     picks it up within a few seconds and syncs the member's roles. No button needed.
 
 Safety: if the connection's ID doesn't resolve to a Roblox user whose name or
 display name matches the connection name, verification is REFUSED (no guessing
@@ -41,7 +42,8 @@ DISCORD_USER_URL = "https://discord.com/api/users/@me"
 DISCORD_CONNECTIONS_URL = "https://discord.com/api/users/@me/connections"
 ROBLOX_USER_API = "https://users.roblox.com/v1/users"
 
-REQUEST_TTL_SECONDS = 10 * 60
+START_TTL_SECONDS = 2 * 60       # link must be opened within 2 minutes (matches the Discord message)
+CALLBACK_TTL_SECONDS = 10 * 60   # but logging in on Discord may take longer
 FALLBACK_VERIFICATION_WEBHOOK = os.getenv("DISCORD_VERIFICATION_WEBHOOK")
 
 
@@ -54,7 +56,7 @@ def _err(message: str, code: int = 400):
     return render_template("error.html", message=message), code
 
 
-def _load_request(state: str):
+def _load_request(state: str, ttl: int):
     """Returns the pending oauth_states doc if state is a fresh dcconn state, else None."""
     if not state or not state.startswith("dcconn:"):
         return None
@@ -65,7 +67,7 @@ def _load_request(state: str):
         ts = int(parts[2])
     except ValueError:
         return None
-    if time.time() - ts > REQUEST_TTL_SECONDS:
+    if time.time() - ts > ttl:
         return None
     return _db["oauth_states"].find_one({"state": state})
 
@@ -118,7 +120,7 @@ def _post_log(discord_id, roblox_username, roblox_id, webhook_url, discord_age, 
 @discordconnect_bp.route("/connect-verify")
 def connect_start():
     state = request.args.get("state", "")
-    if not _load_request(state):
+    if not _load_request(state, START_TTL_SECONDS):
         return _err("This verification link has expired. Go back to Discord and press the button again.")
 
     client_id = os.getenv("DISCORD_CLIENT_ID")
@@ -147,7 +149,7 @@ def connect_callback():
     if not code or not state or session.get("dcconn_state") != state:
         return _err("This verification session isn't valid. Go back to Discord and press the button again.")
 
-    doc = _load_request(state)
+    doc = _load_request(state, CALLBACK_TTL_SECONDS)
     if not doc:
         return _err("This verification link has expired. Go back to Discord and press the button again.")
 
@@ -247,6 +249,18 @@ def connect_callback():
             "timestamp": time.time(),
         })
 
+        # Ask the bot to give this member their roles (picked up within a few seconds).
+        try:
+            _db["pending_role_sync"].insert_one({
+                "discord_id": int(doc["discord_id"]),
+                "guild_id": int(guild_id),
+                "roblox_id": rid,
+                "status": "pending",
+                "created_at": time.time(),
+            })
+        except Exception as e:
+            log.error("[DC-CONNECT] could not queue role sync: %s", e)
+
     _post_log(discord_id, roblox_username, rid, webhook_url, discord_age, roblox_age, prior_discord_id)
 
     _db["oauth_states"].delete_many({"state": state})
@@ -258,5 +272,5 @@ def connect_callback():
         "<body style='font-family:sans-serif;background:#111;color:#eee;display:flex;align-items:center;"
         "justify-content:center;height:100vh;margin:0;text-align:center'>"
         f"<div><h1>✅ Linked to {roblox_username}</h1>"
-        "<p>You can close this tab and press <b>Done</b> in Discord.</p></div></body></html>"
+        "<p>You can close this tab. Your roles will update in a few seconds.</p></div></body></html>"
     )

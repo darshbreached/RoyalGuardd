@@ -15,21 +15,20 @@ the Non-Verified role if one is configured. Roles that come from rankbinds are
 NOT touched. Logged to the same verification webhook.
 
 The panel posted by /panel verification uses VerificationView below:
-"Verify via ROBLOX Login" (on - set OAUTH_LOGIN_ENABLED = False to switch it off;
-the login flow no longer collects any IP or location data),
-"Verify via ROBLOX Ticket" (hands off to
+"Verify via ROBLOX Login" (switched off - flip OAUTH_LOGIN_ENABLED to bring it
+back), "Verify via ROBLOX Ticket" (hands off to
 cogs/ticketverify.py; already-verified members get the same "Is this your ROBLOX
 account?" Yes/No as the Login button, and No opens a ticket to re-verify),
 "Verify via Discord Connection", "Verify via ROBLOX Game" and "Update Roles".
 Panels that were posted BEFORE a change keep their old buttons until
 /panel verification is run again.
 
-"Verify via Discord Connection": reads the Roblox account the member linked in
-Discord (User Settings -> Connections). The member opens a link, logs in with
-Discord (identify + connections scopes), the website saves the link, then they
-press Done here. Backend: website/routes/discordconnect.py.
-
-"Update Roles" (and /update) show the same embeds - see utils/updateembeds.py.
+"Verify via Discord Connection": shows the same "Begin Verification" message as
+the Login flow. The member opens the link, logs in with Discord (identify +
+connections scopes) and the website (website/routes/discordconnect.py) saves
+the Roblox account linked in Discord. The website also queues a document in the
+`pending_role_sync` collection; the loop in the Verification cog below picks it
+up every few seconds and syncs the member's roles. No Done button.
 
 "Verify via ROBLOX Game": the member types their Roblox username in a popup,
 gets the game link + a Done button, joins the game on that account, confirms
@@ -38,24 +37,24 @@ The button is only enabled when ROBLOX_VERIFY_GAME_URL is set (Railway env var
 on the bot services). The game talks to website/routes/gameverify.py.
 
 Every "sync roles" action (the Update Roles buttons and /forceverify) also
-assigns a timezone role based on the country/region stored for members who
-verified before location data was removed - see utils/timezones.py for the
-country->label mapping and its accuracy limitations. Members with no stored
-country/region are skipped (their existing timezone role is left alone).
-Assignment is by exact role NAME match (e.g. a role literally named "EST"),
-same convention as verified_roles/extra_roles - if the guild hasn't created
-that role, it's silently skipped.
+assigns a timezone role based on the country/region captured during
+verification - see utils/timezones.py for the country->label mapping and
+its accuracy limitations. Assignment is by exact role NAME match
+(e.g. a role literally named "EST"), same convention as verified_roles/
+extra_roles - if the guild hasn't created that role, it's silently skipped.
 """
 
+import asyncio
 import os
 import re
 import time
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import secrets
 from urllib.parse import quote
+from pymongo import MongoClient
 
 from database.mongodb import db
 from utils import embeds
@@ -63,7 +62,6 @@ from utils.permissions import require_level
 from utils import roblox
 from utils.timezones import get_timezone_label, all_timezone_labels
 from cogs.update import sync_member_roles
-from utils.updateembeds import not_verified_embed, roles_update_embed
 from utils.roblox import RobloxAPIError
 from config import settings
 
@@ -71,11 +69,42 @@ WEBSITE_BASE_URL = os.getenv("WEBSITE_BASE_URL", "https://your-railway-app.up.ra
 
 GAME_URL = os.getenv("ROBLOX_VERIFY_GAME_URL", "").strip()
 
-OAUTH_LOGIN_ENABLED = True  # False turns "Verify via ROBLOX Login" off
+OAUTH_LOGIN_ENABLED = False  # True turns "Verify via ROBLOX Login" back on
 GAME_VERIFY_ENABLED = bool(GAME_URL)  # on automatically once ROBLOX_VERIFY_GAME_URL is set
 print(f"[VERIFICATION] game url set: {bool(GAME_URL)}")
 
 _ALL_TZ_LABELS = all_timezone_labels()
+
+# ---------------------------------------------------------------------- #
+# pending_role_sync (written by website/routes/discordconnect.py)
+# ---------------------------------------------------------------------- #
+
+_sync_client = None
+
+
+def _pending_sync_col():
+    global _sync_client
+    if _sync_client is None:
+        uri = getattr(settings, "MONGODB_URI", None) or os.getenv("MONGODB_URI")
+        _sync_client = MongoClient(uri)
+    name = getattr(settings, "MONGODB_DB_NAME", None) or os.getenv("MONGODB_DB_NAME", "royalguard")
+    return _sync_client[name]["pending_role_sync"]
+
+
+def _claim_pending_sync(guild_ids):
+    """Atomically claims one fresh pending sync for a guild this bot is in."""
+    return _pending_sync_col().find_one_and_update(
+        {
+            "status": "pending",
+            "guild_id": {"$in": guild_ids},
+            "created_at": {"$gt": time.time() - 600},
+        },
+        {"$set": {"status": "processing", "claimed_at": time.time()}},
+    )
+
+
+def _finish_pending_sync(doc_id, status):
+    _pending_sync_col().update_one({"_id": doc_id}, {"$set": {"status": status, "finished_at": time.time()}})
 
 
 async def _apply_timezone_role(guild: discord.Guild, member: discord.Member, verification: dict) -> str:
@@ -85,11 +114,6 @@ async def _apply_timezone_role(guild: discord.Guild, member: discord.Member, ver
     country_code = verification.get("verification_country_code")
     region = verification.get("verification_region")
     label = get_timezone_label(country_code, region)
-
-    # No stored location at all (OAuth no longer collects it): leave any
-    # existing timezone role alone instead of stripping it.
-    if not country_code and not region:
-        return None
 
     # Strip any other timezone-label role first, regardless of whether a
     # new one will be applied - handles someone re-verifying from a
@@ -149,7 +173,7 @@ async def _post_force_verify_log(guild: discord.Guild, target: discord.Member, r
         f"Discord: {target.mention} | `{target.id}`\n"
         f"ROBLOX: {roblox_username} | {profile_url}\n"
         f"Method: **Manual Override (/forceverify)**\n\n"
-        f"⚠️ Manually verified by {staff.mention} (`{staff.id}`) — bypassed OAuth, so no duplicate-account or account-age checks were run."
+        f"⚠️ Manually verified by {staff.mention} (`{staff.id}`) — bypassed OAuth, no IP/account-age checks were run."
     )
 
     embed = {"title": "Verification Logs", "description": description, "color": 0x9B59B6}
@@ -191,7 +215,10 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
 
         verification = await db.get_verification(interaction.user.id)
         if not verification:
-            return await interaction.followup.send(embed=not_verified_embed(interaction.user), ephemeral=True)
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Not Verified", "You need to verify your Roblox account first."),
+                ephemeral=True,
+            )
 
         try:
             added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
@@ -205,7 +232,16 @@ class AlreadyVerifiedUpdateView(discord.ui.View):
             )
 
         tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
-        await interaction.followup.send(embed=roles_update_embed(interaction.user, added, removed, tz_label), ephemeral=True)
+
+        desc = "Your roles are now up to date."
+        if added:
+            desc += f"\n**Added:** {', '.join(added)}"
+        if removed:
+            desc += f"\n**Removed:** {', '.join(removed)}"
+        if tz_label:
+            desc += f"\n**Timezone:** {tz_label}"
+
+        await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
 
 
 class GameDoneView(discord.ui.View):
@@ -334,81 +370,13 @@ class ConfirmGameAccountView(discord.ui.View):
         await interaction.response.send_modal(GameUsernameModal())
 
 
-class ConnectDoneView(discord.ui.View):
-    """Shown with the Discord Connection link. Done = 'I finished on the website, give me roles.'"""
-
-    def __init__(self, started_at: float):
-        super().__init__(timeout=600)
-        self.started_at = started_at
-
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.success)
-    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        verification = await db.get_verification(interaction.user.id)
-        fresh = False
-        if verification:
-            ts = verification.get("verified_at")
-            try:
-                fresh = ts is None or float(ts) >= self.started_at - 5
-            except (TypeError, ValueError):
-                fresh = True
-        if not verification or not fresh:
-            return await interaction.followup.send(
-                embed=embeds.warning_embed(
-                    "Not Verified Yet",
-                    "I haven't seen you finish on the website yet.\n\n"
-                    "Open the link, log in with Discord, then press **Done** again.\n"
-                    "Make sure Roblox is linked in Discord: **User Settings > Connections > Roblox**."
-                ),
-                ephemeral=True,
-            )
-
-        try:
-            added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
-        except RobloxAPIError:
-            return await interaction.followup.send(
-                embed=embeds.error_embed(
-                    "Roblox Temporarily Unavailable",
-                    "You're verified, but Roblox's API didn't respond just now so no roles were changed. "
-                    "Press **Update Roles** on the panel in a minute."
-                ),
-                ephemeral=True,
-            )
-
-        desc = f"You are now verified as **{verification.get('roblox_username')}**."
-        if added:
-            desc += f"\n**Added:** {', '.join(added)}"
-        if removed:
-            desc += f"\n**Removed:** {', '.join(removed)}"
-
-        await interaction.followup.send(embed=embeds.success_embed("Verified", desc), ephemeral=True)
-        try:
-            await interaction.edit_original_response(view=None)
-        except Exception:
-            pass
-        self.stop()
-
-
 async def _start_connect_flow(interaction: discord.Interaction, edit: bool = False):
-    """Creates the pending state and shows the link + Done button."""
-    started_at = time.time()
-    state = f"dcconn:{secrets.token_urlsafe(16)}:{int(started_at)}"
+    """Creates the pending state and shows the same 'Begin Verification' message as the Login flow."""
+    state = f"dcconn:{secrets.token_urlsafe(16)}:{int(time.time())}"
     await db.create_oauth_state(state, interaction.user.id, interaction.guild.id)
     url = f"{WEBSITE_BASE_URL}/connect-verify?state={quote(state, safe='')}"
 
-    embed = embeds.info_embed(
-        settings.VERIFICATION_PANEL_TITLE,
-        "**Before you start:** link your Roblox account in Discord under "
-        "**User Settings > Connections > Roblox**.\n\n"
-        "1. Press **Begin Verification** and log in with Discord.\n"
-        "2. Come back here and press **Done**.\n\n"
-        "**Please DO NOT share this link with anyone.**\n"
-        "This request expires in **10 minutes**."
-    )
-    view = ConnectDoneView(started_at)
-    view.add_item(discord.ui.Button(label="Begin Verification", style=discord.ButtonStyle.link, url=url))
-
+    embed, view = _begin_verification_embed_and_view(url)
     if edit:
         await interaction.response.edit_message(embed=embed, view=view)
     else:
@@ -609,7 +577,10 @@ class VerificationView(discord.ui.View):
 
         verification = await db.get_verification(interaction.user.id)
         if not verification:
-            return await interaction.followup.send(embed=not_verified_embed(interaction.user), ephemeral=True)
+            return await interaction.followup.send(
+                embed=embeds.error_embed("Not Verified", "You need to verify your Roblox account first."),
+                ephemeral=True,
+            )
 
         try:
             added, removed, _ = await sync_member_roles(interaction.guild, interaction.user, int(verification["roblox_id"]))
@@ -623,12 +594,73 @@ class VerificationView(discord.ui.View):
             )
 
         tz_label = await _apply_timezone_role(interaction.guild, interaction.user, verification)
-        await interaction.followup.send(embed=roles_update_embed(interaction.user, added, removed, tz_label), ephemeral=True)
+
+        desc = "Your roles are now up to date."
+        if added:
+            desc += f"\n**Added:** {', '.join(added)}"
+        if removed:
+            desc += f"\n**Removed:** {', '.join(removed)}"
+        if tz_label:
+            desc += f"\n**Timezone:** {tz_label}"
+
+        await interaction.followup.send(embed=embeds.success_embed("Roles Updated", desc), ephemeral=True)
 
 
 class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        self.connect_sync_loop.start()
+
+    def cog_unload(self):
+        self.connect_sync_loop.cancel()
+
+    @tasks.loop(seconds=3)
+    async def connect_sync_loop(self):
+        """Gives roles to members who just finished 'Verify via Discord Connection' on the website."""
+        guild_ids = [g.id for g in self.bot.guilds]
+        if not guild_ids:
+            return
+        for _ in range(5):
+            try:
+                doc = await asyncio.to_thread(_claim_pending_sync, guild_ids)
+            except Exception as e:
+                print(f"[CONNECT-SYNC] claim failed: {e}")
+                return
+            if not doc:
+                return
+            await self._sync_pending(doc)
+
+    @connect_sync_loop.before_loop
+    async def _before_connect_sync_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _sync_pending(self, doc: dict):
+        status = "done"
+        try:
+            guild = self.bot.get_guild(int(doc["guild_id"]))
+            if guild is None:
+                raise RuntimeError("guild not found")
+
+            member_id = int(doc["discord_id"])
+            member = guild.get_member(member_id)
+            if member is None:
+                member = await guild.fetch_member(member_id)
+
+            verification = await db.get_verification(member.id)
+            if not verification:
+                raise RuntimeError("no verification record")
+
+            await sync_member_roles(guild, member, int(verification["roblox_id"]))
+        except Exception as e:
+            status = "failed"
+            print(f"[CONNECT-SYNC] role sync failed for {doc.get('discord_id')}: {e}")
+
+        try:
+            await asyncio.to_thread(_finish_pending_sync, doc["_id"], status)
+        except Exception as e:
+            print(f"[CONNECT-SYNC] could not mark sync {status}: {e}")
 
     @app_commands.command(name="verify", description="Check or start your Roblox verification.")
     async def verify(self, interaction: discord.Interaction):
