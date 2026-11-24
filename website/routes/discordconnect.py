@@ -15,6 +15,7 @@ Flow:
      double-checks the Roblox ID against the Roblox API, then saves it.
   4. It also queues a document in `pending_role_sync`; the bot (cogs/verification.py)
      picks it up within a few seconds and syncs the member's roles. No button needed.
+  5. The member sees the same success.html page as the OAuth flow.
 
 Safety: if the connection's ID doesn't resolve to a Roblox user whose name or
 display name matches the connection name, verification is REFUSED (no guessing
@@ -90,6 +91,26 @@ def _resolve_roblox(conn: dict):
     except Exception:
         return None
     return None
+
+
+def _discord_avatar_url(user: dict) -> str:
+    uid = str(user.get("id") or "0")
+    avatar = user.get("avatar")
+    if avatar:
+        return f"https://cdn.discordapp.com/avatars/{uid}/{avatar}.png?size=128"
+    try:
+        idx = (int(uid) >> 22) % 6
+    except ValueError:
+        idx = 0
+    return f"https://cdn.discordapp.com/embed/avatars/{idx}.png"
+
+
+def _roblox_avatar_url(roblox_id: str):
+    try:
+        from website.routes.oauth import get_roblox_avatar
+        return get_roblox_avatar(roblox_id)
+    except Exception:
+        return None
 
 
 def _post_log(discord_id, roblox_username, roblox_id, webhook_url, discord_age, roblox_age, prior_discord_id=None):
@@ -188,8 +209,9 @@ def connect_callback():
         log.error("[DC-CONNECT] me/connections failed: %s / %s", me.status_code, conns.status_code)
         return _err("Couldn't read your Discord connections. Please try again.", 502)
 
+    me_json = me.json()
     discord_id = str(doc["discord_id"])
-    if str(me.json().get("id")) != discord_id:
+    if str(me_json.get("id")) != discord_id:
         return _err("You logged into a different Discord account than the one that pressed the button.")
 
     roblox_conns = [c for c in conns.json() if c.get("type") == "roblox"]
@@ -266,11 +288,12 @@ def connect_callback():
     _db["oauth_states"].delete_many({"state": state})
     session.pop("dcconn_state", None)
 
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Verified</title></head>"
-        "<body style='font-family:sans-serif;background:#111;color:#eee;display:flex;align-items:center;"
-        "justify-content:center;height:100vh;margin:0;text-align:center'>"
-        f"<div><h1>✅ Linked to {roblox_username}</h1>"
-        "<p>You can close this tab. Your roles will update in a few seconds.</p></div></body></html>"
+    return render_template(
+        "success.html",
+        roblox_username=roblox_username,
+        roblox_id=rid,
+        roblox_avatar=_roblox_avatar_url(rid),
+        discord_username=me_json.get("username"),
+        discord_id=discord_id,
+        discord_avatar=_discord_avatar_url(me_json),
     )
