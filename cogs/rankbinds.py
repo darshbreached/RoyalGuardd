@@ -12,6 +12,9 @@ nickname prefix (e.g. "[OF-8]") applied automatically during role sync.
 /rankbind removebulk - remove every rankbind for a group at once, or every
                        rankbind tied to a specific Discord role across all
                        ranks/groups
+/rankbind view        - pick a group from a dropdown, then see every rank in it
+                       (nickname prefix + bound roles) in a RoWifi-style embed
+                       with a close button; pages automatically if long
 /rankbind list        - list current bindings for a group, paginated by
                        character count (not a fixed line count) so a rank
                        with many bound roles never blows past Discord's
@@ -103,6 +106,51 @@ def _paginate_lines(lines: list) -> list:
     return pages
 
 
+def _rank_sort_key(item):
+    rank_id = item[0]
+    try:
+        return (0, int(rank_id), "")
+    except (TypeError, ValueError):
+        return (1, 0, str(rank_id))
+
+
+def _build_view_blocks(binds: list) -> tuple:
+    """Returns (blocks, total_ranks) for /rankbind view: one text block per rank."""
+    by_rank = {}
+    for b in binds:
+        entry = by_rank.setdefault(
+            b["rank_id"], {"rank_name": b.get("rank_name") or "", "prefixes": [], "roles": []}
+        )
+        entry["roles"].append(b["role_id"])
+        prefix = b.get("nickname_prefix")
+        if prefix and prefix not in entry["prefixes"]:
+            entry["prefixes"].append(prefix)
+
+    blocks = []
+    for rank_id, data in sorted(by_rank.items(), key=_rank_sort_key):
+        name = data["rank_name"]
+        header = f"**Rank {rank_id}**"
+        if name and name != f"Rank {rank_id}":
+            header += f" ({name})"
+
+        prefix_text = ", ".join(f"`{p}`" for p in data["prefixes"]) if data["prefixes"] else "None"
+
+        mentions = [f"<@&{rid}>" for rid in data["roles"]]
+        shown = mentions[:MAX_ROLES_SHOWN_PER_RANK]
+        remainder = len(mentions) - len(shown)
+        roles_text = ", ".join(shown) if shown else "None"
+        if remainder > 0:
+            roles_text += f", and {remainder} more"
+
+        blocks.append(
+            f"{header}\n"
+            f"Nickname Prefix: {prefix_text}\n"
+            f"Roles Binded: {roles_text}\n"
+        )
+
+    return blocks, len(by_rank)
+
+
 class RankbindListView(discord.ui.View):
     def __init__(self, title: str, pages: list, executor_id: int):
         super().__init__(timeout=120)
@@ -141,6 +189,116 @@ class RankbindListView(discord.ui.View):
         self.current += 1
         self._update_buttons()
         await interaction.response.edit_message(embed=self._embed(), view=self)
+
+
+class RankbindViewPager(discord.ui.View):
+    """The 'Viewing Rankbinds for <server>' embed: one block per rank, close button,
+    Previous/Next only when the group needs more than one page."""
+
+    def __init__(self, guild_name: str, group_id: int, total_ranks: int, pages: list, executor_id: int, author: discord.abc.User):
+        super().__init__(timeout=300)
+        self.guild_name = guild_name
+        self.group_id = group_id
+        self.total_ranks = total_ranks
+        self.pages = pages
+        self.current = 0
+        self.executor_id = executor_id
+        self.author = author
+
+        if len(pages) <= 1:
+            self.remove_item(self.previous_page)
+            self.remove_item(self.next_page)
+        else:
+            self._update_buttons()
+
+    def _update_buttons(self):
+        self.previous_page.disabled = self.current == 0
+        self.next_page.disabled = self.current == len(self.pages) - 1
+
+    def _embed(self) -> discord.Embed:
+        header = f"Viewing group {self.group_id} | Total {self.total_ranks} Rankbinds"
+        embed = embeds.info_embed(
+            f"Viewing Rankbinds for {self.guild_name}",
+            f"{header}\n\n{self.pages[self.current]}".strip(),
+        )
+        embed.set_author(name=self.author.display_name, icon_url=self.author.display_avatar.url)
+        if len(self.pages) > 1:
+            embed.set_footer(text=f"Page {self.current + 1}/{len(self.pages)}")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.executor_id:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Not Allowed", "Only the person who ran this command can use these buttons."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(label="✖", style=discord.ButtonStyle.secondary)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+        self.stop()
+
+
+class RankbindGroupSelect(discord.ui.Select):
+    def __init__(self, groups: list):
+        options = []
+        for g in groups[:25]:
+            gid = str(g["group_id"])
+            name = str(g.get("group_name") or f"Group {gid}")
+            options.append(discord.SelectOption(label=name[:100], value=gid, description=f"Group ID: {gid}"[:100]))
+        super().__init__(placeholder="Select Group to View Rankbinds", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        group_id = int(self.values[0])
+        binds = await db.list_rankbinds(interaction.guild.id, group_id)
+
+        if not binds:
+            return await interaction.response.send_message(
+                embed=embeds.info_embed("No Rankbinds", f"No rankbinds found for group `{group_id}`."),
+                ephemeral=True,
+            )
+
+        blocks, total_ranks = _build_view_blocks(binds)
+        pages = _paginate_lines(blocks)
+
+        view = RankbindViewPager(
+            interaction.guild.name, group_id, total_ranks, pages, interaction.user.id, interaction.user
+        )
+        await interaction.response.edit_message(embed=view._embed(), view=view)
+
+
+class RankbindGroupSelectView(discord.ui.View):
+    def __init__(self, groups: list, executor_id: int):
+        super().__init__(timeout=300)
+        self.executor_id = executor_id
+        self.add_item(RankbindGroupSelect(groups))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.executor_id:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Not Allowed", "Only the person who ran this command can use this menu."),
+                ephemeral=True,
+            )
+            return False
+        return True
 
 
 class RankbindRoleSelect(discord.ui.RoleSelect):
@@ -206,6 +364,10 @@ class RankBinds(commands.Cog):
         self.group.add_command(
             app_commands.Command(name="removebulk", description="Remove multiple rankbinds at once.",
                                   callback=self.rankbind_removebulk)
+        )
+        self.group.add_command(
+            app_commands.Command(name="view", description="View every rankbind for a group.",
+                                  callback=self.rankbind_view)
         )
         self.group.add_command(
             app_commands.Command(name="list", description="List rankbinds for a group.",
@@ -325,6 +487,21 @@ class RankBinds(commands.Cog):
             await interaction.followup.send(
                 embed=embeds.success_embed("Rankbinds Cleared", f"Removed **{result.deleted_count}** rankbind(s) using {role.mention}.")
             )
+
+    async def rankbind_view(self, interaction: discord.Interaction):
+        groups = await db.list_groupbinds(interaction.guild.id)
+        if not groups:
+            return await interaction.response.send_message(
+                embed=embeds.error_embed("No Groups", "This server has no Roblox groups bound yet."),
+                ephemeral=True,
+            )
+
+        embed = embeds.info_embed(
+            f"Viewing Rankbinds For {interaction.guild.name}",
+            "Select the group you wish to view rankbinds linked to.",
+        )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        await interaction.response.send_message(embed=embed, view=RankbindGroupSelectView(groups, interaction.user.id))
 
     @app_commands.describe(group_id="The Roblox group (start typing to search your bound groups)")
     @app_commands.autocomplete(group_id=group_autocomplete)
