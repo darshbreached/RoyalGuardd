@@ -24,6 +24,8 @@ from website.routes.appeal import appeal_bp
 app.register_blueprint(appeal_bp)
 from website.routes.gameverify import gameverify_bp
 app.register_blueprint(gameverify_bp)
+from website.routes.discordconnect import discordconnect_bp
+app.register_blueprint(discordconnect_bp)
 from website.routes.admin import admin_bp
 app.register_blueprint(admin_bp)
 @app.route("/")
