@@ -20,7 +20,7 @@ class VerificationView(discord.ui.View):
             description=(
                 "Press the button below to start verification."
             ),
-            color=0x2ecc71
+            color=0x206694
         )
 
         view = discord.ui.View()
